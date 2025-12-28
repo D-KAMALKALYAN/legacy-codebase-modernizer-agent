@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs').promises;
+const axios = require('axios');
 const Job = require('../models/Job');
 const {
   validateFileSize,
@@ -9,6 +10,138 @@ const {
   analyzeDirectory,
   saveSnippet
 } = require('../utils/fileHandler');
+
+/**
+ * Trigger AI analysis for a job
+ */
+async function triggerAIAnalysis(jobId, filePath, uploadType) {
+  const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+  
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🤖 TRIGGERING AI ANALYSIS`);
+  console.log(`${'='.repeat(60)}`);
+  console.log(`Job ID: ${jobId}`);
+  console.log(`File Path: ${filePath}`);
+  console.log(`Upload Type: ${uploadType}`);
+  console.log(`AI Service URL: ${aiServiceUrl}`);
+  console.log(`${'='.repeat(60)}\n`);
+  
+  try {
+    // Update job status to processing
+    await Job.findByIdAndUpdate(jobId, { status: 'processing' });
+    console.log(`✅ Job status updated to 'processing'`);
+    
+    // Call AI service
+    console.log(`📡 Calling AI service...`);
+    const response = await axios.post(
+      `${aiServiceUrl}/api/analyze`,
+      {
+        job_id: jobId.toString(),
+        file_path: filePath,
+        upload_type: uploadType,
+        force_refresh: false
+      },
+      {
+        timeout: 300000, // 5 minute timeout
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`📊 AI SERVICE RESPONSE RECEIVED`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`Status: ${response.status}`);
+    console.log(`Response Keys: ${Object.keys(response.data).join(', ')}`);
+    
+    const analysisResult = response.data;
+    
+    console.log(`Job ID: ${analysisResult.job_id}`);
+    console.log(`Status: ${analysisResult.status}`);
+    console.log(`Report Path: ${analysisResult.report_path || 'NOT PROVIDED'}`);
+    console.log(`Issues Count: ${analysisResult.issues?.length || 0}`);
+    console.log(`Summary:`, JSON.stringify(analysisResult.summary, null, 2));
+    console.log(`Metadata:`, JSON.stringify(analysisResult.metadata, null, 2));
+    console.log(`${'='.repeat(60)}\n`);
+    
+    // Prepare metadata
+    const metadata = {
+      fileCount: analysisResult.summary?.files_analyzed || 0,
+      totalLines: analysisResult.summary?.total_lines || 0,
+      languages: analysisResult.summary?.languages_detected || [],
+      totalIssues: analysisResult.summary?.total_issues || 0,
+      critical: analysisResult.summary?.critical || 0,
+      warnings: analysisResult.summary?.warnings || 0,
+      tokens_used: analysisResult.metadata?.tokens_used || 0,
+      cost_estimate: analysisResult.metadata?.cost_estimate || 0,
+      cached: analysisResult.metadata?.cached || false
+    };
+    
+    console.log(`📝 Updating job in database...`);
+    console.log(`   Report Path to save: ${analysisResult.report_path}`);
+    
+    // Update job with results
+    const updatedJob = await Job.findByIdAndUpdate(
+      jobId,
+      {
+        status: 'completed',
+        reportPath: analysisResult.report_path,
+        completedAt: new Date(),
+        metadata: metadata
+      },
+      { new: true } // Return updated document
+    );
+    
+    if (!updatedJob) {
+      throw new Error(`Job ${jobId} not found in database`);
+    }
+    
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`✅ JOB UPDATE SUCCESSFUL`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`Job ID: ${updatedJob._id}`);
+    console.log(`Status: ${updatedJob.status}`);
+    console.log(`Report Path: ${updatedJob.reportPath || 'NULL'}`);
+    console.log(`Completed At: ${updatedJob.completedAt}`);
+    console.log(`Issues: ${metadata.totalIssues} (${metadata.critical} critical, ${metadata.warnings} warnings)`);
+    console.log(`Cached: ${metadata.cached ? 'YES' : 'NO'}`);
+    console.log(`${'='.repeat(60)}\n`);
+    
+  } catch (error) {
+    console.error(`\n${'='.repeat(60)}`);
+    console.error(`❌ AI ANALYSIS FAILED`);
+    console.error(`${'='.repeat(60)}`);
+    console.error(`Job ID: ${jobId}`);
+    console.error(`Error Type: ${error.name}`);
+    console.error(`Error Message: ${error.message}`);
+    
+    if (error.response) {
+      console.error(`Response Status: ${error.response.status}`);
+      console.error(`Response Data:`, JSON.stringify(error.response.data, null, 2));
+    } else if (error.request) {
+      console.error(`No response received from AI service`);
+      console.error(`Request was made but no response`);
+    } else {
+      console.error(`Error setting up request: ${error.message}`);
+    }
+    
+    console.error(`Stack Trace:`, error.stack);
+    console.error(`${'='.repeat(60)}\n`);
+    
+    // Update job status to failed
+    try {
+      await Job.findByIdAndUpdate(jobId, {
+        status: 'failed',
+        errorMessage: error.response?.data?.detail || error.message || 'AI analysis failed',
+        completedAt: new Date()
+      });
+      console.log(`✅ Job status updated to 'failed'`);
+    } catch (updateError) {
+      console.error(`❌ Failed to update job status:`, updateError.message);
+    }
+  }
+}
 
 /**
  * @route   POST /api/jobs/upload/snippet
@@ -53,6 +186,12 @@ const uploadSnippet = async (req, res) => {
       message: 'Snippet uploaded successfully',
       data: { job }
     });
+
+    // Trigger AI analysis asynchronously (don't wait for response)
+    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+      console.error('AI analysis trigger failed:', err);
+    });
+
   } catch (error) {
     console.error('Upload snippet error:', error);
     res.status(500).json({
@@ -132,6 +271,12 @@ const uploadZip = async (req, res) => {
         folderStructure
       }
     });
+
+    // Trigger AI analysis asynchronously
+    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+      console.error('AI analysis trigger failed:', err);
+    });
+
   } catch (error) {
     console.error('Upload ZIP error:', error);
     res.status(500).json({
@@ -209,6 +354,12 @@ const uploadFolder = async (req, res) => {
         folderStructure
       }
     });
+
+    // Trigger AI analysis asynchronously
+    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+      console.error('AI analysis trigger failed:', err);
+    });
+
   } catch (error) {
     console.error('Upload folder error:', error);
     res.status(500).json({

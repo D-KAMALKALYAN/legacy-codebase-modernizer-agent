@@ -26,11 +26,42 @@ const getReport = async (req, res) => {
       });
     }
 
+    // Check job status
+    if (job.status === 'pending' || job.status === 'processing') {
+      return res.status(202).json({
+        success: false,
+        message: `Job is still ${job.status}. Please wait for analysis to complete.`,
+        status: job.status
+      });
+    }
+
+    if (job.status === 'failed') {
+      return res.status(500).json({
+        success: false,
+        message: 'Job analysis failed',
+        error: job.errorMessage
+      });
+    }
+
     // Check if report exists
     if (!job.reportPath) {
       return res.status(404).json({
         success: false,
-        message: 'Report not yet generated for this job'
+        message: 'Report not yet generated for this job',
+        hint: 'This may happen for cached results. Try re-analyzing with force_refresh=true'
+      });
+    }
+
+    // Check if report file actually exists
+    const fs = require('fs').promises;
+    try {
+      await fs.access(job.reportPath);
+    } catch (error) {
+      return res.status(404).json({
+        success: false,
+        message: 'Report file not found on disk',
+        reportPath: job.reportPath,
+        hint: 'The report may have been deleted. Try re-analyzing the code.'
       });
     }
 
@@ -44,7 +75,13 @@ const getReport = async (req, res) => {
         fileName: job.fileName,
         reportContent,
         format: path.extname(job.reportPath).substring(1), // md or pdf
-        generatedAt: job.completedAt
+        generatedAt: job.completedAt,
+        metadata: {
+          totalIssues: job.metadata?.totalIssues || 0,
+          critical: job.metadata?.critical || 0,
+          warnings: job.metadata?.warnings || 0,
+          cached: job.metadata?.cached || false
+        }
       }
     });
   } catch (error) {
