@@ -19,7 +19,8 @@ class CodeIssue(BaseModel):
     suggestion: str = Field(..., description="Recommended fix")
     code_snippet: Optional[str] = Field(None, description="Problematic code")
     fixed_code: Optional[str] = Field(None, description="Suggested fix")
-
+    confidence: Optional[float] = Field(0.9, description="Confidence score (0.0-1.0)")
+                                         
 class AnalysisSummary(BaseModel):
     """Summary of analysis"""
     total_issues: int
@@ -56,3 +57,4 @@ class HealthResponse(BaseModel):
     llm_provider: str
     redis_connected: bool
     timestamp: datetime
+

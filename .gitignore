@@ -38,3 +38,6 @@ logs/
 # Testing
 coverage/
 .pytest_cache/
+
+#Sample Data
+sample-data

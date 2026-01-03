@@ -49,7 +49,7 @@ metadata : {
     languages : [String]
 },
 
-createAt : {
+createdAt : {
     type : Date,
     default : Date.now
 },
