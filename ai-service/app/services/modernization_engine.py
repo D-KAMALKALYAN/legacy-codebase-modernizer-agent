@@ -1,3 +1,8 @@
+"""
+Core engine for code modernization analysis - WITH VALIDATION
+File: app/services/modernization_engine.py
+"""
+
 import os
 import time
 from typing import Dict, Any, List
@@ -7,11 +12,13 @@ import logging
 from app.config import settings
 from app.services.cache_service import cache_service
 from app.services.llm_service import llm_service
+from app.services.validation_service import validation_service  # NEW
 from app.utils.file_reader import file_reader
 from app.utils.token_counter import token_counter
 from app.models.schemas import CodeIssue, AnalysisSummary, AnalysisMetadata
 
 logger = logging.getLogger(__name__)
+
 
 class ModernizationEngine:
     """Core engine for code modernization analysis"""
@@ -19,6 +26,7 @@ class ModernizationEngine:
     def __init__(self):
         self.prompt_template = self._load_prompt_template()
         self.llm_service = llm_service
+        self.validation_service = validation_service  # NEW
     
     def _load_prompt_template(self) -> str:
         """Load prompt template from file"""
@@ -90,6 +98,9 @@ class ModernizationEngine:
         # Build prompt
         prompt = self._build_prompt(files_data)
         
+        # Store original code for validation
+        original_code = self._extract_original_code(files_data)
+        
         # Count tokens
         input_tokens = token_counter.count_tokens(prompt)
         logger.info(f"Prompt tokens: {input_tokens}")
@@ -97,7 +108,10 @@ class ModernizationEngine:
         # Check token limit
         if input_tokens > settings.MAX_TOKENS_PER_REQUEST:
             # Chunk files if needed (V1: Simple truncation)
-            logger.warning(f"Token limit exceeded ({input_tokens} > {settings.MAX_TOKENS_PER_REQUEST}). Truncating.")
+            logger.warning(
+                f"Token limit exceeded ({input_tokens} > {settings.MAX_TOKENS_PER_REQUEST}). "
+                f"Truncating."
+            )
             prompt = token_counter.truncate_to_token_limit(
                 prompt,
                 settings.MAX_TOKENS_PER_REQUEST
@@ -113,6 +127,15 @@ class ModernizationEngine:
         output_tokens = llm_metadata.get("tokens_output", 0)
         total_tokens = llm_metadata.get("tokens_total", input_tokens)
         
+        # ============================================================
+        # NEW: VALIDATE LLM RESPONSE TO PREVENT HALLUCINATIONS
+        # ============================================================
+        validated_response = self.validation_service.validate_analysis(
+            llm_response=llm_response,
+            original_code=original_code,
+            job_id=cache_key[:8]  # Use first 8 chars of cache key as job ID
+        )
+        
         # Calculate cost
         cost_estimate = token_counter.estimate_cost(
             input_tokens,
@@ -120,12 +143,15 @@ class ModernizationEngine:
             llm_metadata.get("model")
         )
         
-        # Build response
+        # Build response with validated data
         result = {
-            "analysis": llm_response,
-            "issues": [issue.model_dump() for issue in self._parse_issues(llm_response.get("issues", []))],
+            "analysis": validated_response,  # Use validated response
+            "issues": [
+                issue if isinstance(issue, dict) else issue.model_dump() 
+                for issue in self._parse_issues(validated_response.get("issues", []))
+            ],
             "summary": self._build_summary(
-                llm_response.get("summary", {}),
+                validated_response.get("summary", {}),  # Use validated summary
                 stats
             ).model_dump(),
             "metadata": {
@@ -134,16 +160,28 @@ class ModernizationEngine:
                 "tokens_used": total_tokens,
                 "model": llm_metadata.get("model", settings.OPENAI_MODEL),
                 "processing_time": time.time() - start_time,
-                "cost_estimate": cost_estimate
+                "cost_estimate": cost_estimate,
+                "validation_applied": True,  # NEW: Flag that validation was applied
+                "min_confidence": self.validation_service.min_confidence  # NEW
             }
         }
         
         # Cache result
         cache_service.set(cache_key, result, upload_type)
         
-        logger.info(f"✅ Analysis complete in {result['metadata']['processing_time']:.2f}s. Cost: ${cost_estimate:.6f}")
+        logger.info(
+            f"✅ Analysis complete in {result['metadata']['processing_time']:.2f}s. "
+            f"Cost: ${cost_estimate:.6f}"
+        )
         
         return result
+    
+    def _extract_original_code(self, files_data: List[Dict[str, str]]) -> str:
+        """Extract all code content for validation"""
+        code_parts = []
+        for file_data in files_data:
+            code_parts.append(file_data['content'])
+        return "\n\n".join(code_parts)
     
     def _build_prompt(self, files_data: List[Dict[str, str]]) -> str:
         """Build prompt from files"""
@@ -162,6 +200,9 @@ class ModernizationEngine:
         issues = []
         for issue in issues_raw:
             try:
+                # Ensure confidence field exists
+                if "confidence" not in issue:
+                    issue["confidence"] = 0.8  # Default confidence
                 issues.append(CodeIssue(**issue))
             except Exception as e:
                 logger.warning(f"Failed to parse issue: {e}")
@@ -178,6 +219,7 @@ class ModernizationEngine:
             total_lines=stats["total_lines"],
             languages_detected=stats["languages"]
         )
+
 
 # Global instance
 modernization_engine = ModernizationEngine()

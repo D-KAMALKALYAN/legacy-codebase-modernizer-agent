@@ -13,13 +13,13 @@ class CodeIssue(BaseModel):
     """Individual code issue"""
     type: str = Field(..., description="Issue type: security, performance, syntax, etc.")
     severity: str = Field(..., description="Severity: critical, warning, info")
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence score 0.0-1.0") 
     file: str = Field(..., description="File path")
     line: Optional[int] = Field(None, description="Line number")
     message: str = Field(..., description="Issue description")
     suggestion: str = Field(..., description="Recommended fix")
     code_snippet: Optional[str] = Field(None, description="Problematic code")
     fixed_code: Optional[str] = Field(None, description="Suggested fix")
-    confidence: Optional[float] = Field(0.9, description="Confidence score (0.0-1.0)")
                                          
 class AnalysisSummary(BaseModel):
     """Summary of analysis"""
@@ -39,7 +39,8 @@ class AnalysisMetadata(BaseModel):
     model: str = Field(..., description="LLM model used")
     processing_time: float = Field(..., description="Processing time in seconds")
     cost_estimate: float = Field(default=0.0, description="Estimated cost in USD")
-
+    validation_applied: bool = True 
+    min_confidence: float = 0.5 
 class AnalysisResponse(BaseModel):
     """Response model for code analysis"""
     job_id: str

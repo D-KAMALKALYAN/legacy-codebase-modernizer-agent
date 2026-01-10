@@ -97,7 +97,7 @@ const analyzeDirectory = async(dirPath) => {
     const traverse = async (currentPath) => {
         const stats = await fs.stat(currentPath);
 
-        if(stats.ifFile()){
+        if(stats.isFile()){
             const ext = path.extname(currentPath).toLowerCase();
 
             if(ext && ext !== '.zip'){

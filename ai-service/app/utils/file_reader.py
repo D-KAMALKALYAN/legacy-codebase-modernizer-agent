@@ -24,7 +24,8 @@ class FileReader:
         '.sql',                         # SQL
         '.sh', '.bash',                 # Shell
         '.html', '.css',                # Web
-        '.json', '.yaml', '.yml', '.xml' # Config
+        '.json', '.yaml', '.yml', '.xml', # Config
+        '.cbl', '.cob', '.cpy', '.CBL', '.COB', '.CPY', #COBOL
     }
     
     # Directories to skip
@@ -137,7 +138,11 @@ class FileReader:
             '.sql': 'SQL',
             '.sh': 'Shell',
             '.html': 'HTML',
-            '.css': 'CSS'
+            '.css': 'CSS',
+            '.cbl': 'COBOL',  
+            '.cob': 'COBOL',  
+            '.CBL': 'COBOL',
+            '.COB': 'COBOL',
         }
         
         languages = set()
