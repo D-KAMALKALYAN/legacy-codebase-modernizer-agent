@@ -26,7 +26,6 @@ packaging>=25.0
 pillow>=12.0.0
 pydantic==2.12.0
 pydantic-settings>=2.1.0
-# Remove pydantic_core pin - pydantic will handle it
 python-dateutil>=2.8.2
 python-dotenv>=1.0.0
 python-multipart>=0.0.6
@@ -48,3 +47,6 @@ urllib3>=2.6.2
 uvicorn>=0.27.0
 watchfiles>=1.1.1
 websockets>=15.0.1
+pymongo==4.10.1  
+motor==3.6.0 
+

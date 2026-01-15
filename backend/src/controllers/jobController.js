@@ -1,27 +1,28 @@
 const path = require('path');
-const fs = require('fs').promises;
+const mongoose = require('mongoose');
+const { GridFSBucket } = require('mongoose').mongo;
 const axios = require('axios');
 const Job = require('../models/Job');
-const {
-  validateFileSize,
-  validateFileType,
-  extractZip,
-  generateFolderStructure,
-  analyzeDirectory,
-  saveSnippet
-} = require('../utils/fileHandler');
+
+// Initialize GridFS
+let gridfsBucket;
+mongoose.connection.on('open', () => {
+  gridfsBucket = new GridFSBucket(mongoose.connection.db, {
+    bucketName: 'uploads'
+  });
+});
 
 /**
  * Trigger AI analysis for a job
  */
-async function triggerAIAnalysis(jobId, filePath, uploadType) {
+async function triggerAIAnalysis(jobId, fileId, uploadType) {
   const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
   
   console.log(`\n${'='.repeat(60)}`);
   console.log(`🤖 TRIGGERING AI ANALYSIS`);
   console.log(`${'='.repeat(60)}`);
   console.log(`Job ID: ${jobId}`);
-  console.log(`File Path: ${filePath}`);
+  console.log(`File ID: ${fileId}`);
   console.log(`Upload Type: ${uploadType}`);
   console.log(`AI Service URL: ${aiServiceUrl}`);
   console.log(`${'='.repeat(60)}\n`);
@@ -31,13 +32,13 @@ async function triggerAIAnalysis(jobId, filePath, uploadType) {
     await Job.findByIdAndUpdate(jobId, { status: 'processing' });
     console.log(`✅ Job status updated to 'processing'`);
     
-    // Call AI service
+    // Call AI service with file_id (not file_path)
     console.log(`📡 Calling AI service...`);
     const response = await axios.post(
       `${aiServiceUrl}/api/analyze`,
       {
         job_id: jobId.toString(),
-        file_path: filePath,
+        file_id: fileId.toString(), // ✅ Sending GridFS ID
         upload_type: uploadType,
         force_refresh: false
       },
@@ -53,17 +54,14 @@ async function triggerAIAnalysis(jobId, filePath, uploadType) {
     console.log(`📊 AI SERVICE RESPONSE RECEIVED`);
     console.log(`${'='.repeat(60)}`);
     console.log(`Status: ${response.status}`);
-    console.log(`Response Keys: ${Object.keys(response.data).join(', ')}`);
     
     const analysisResult = response.data;
     
-    console.log(`Job ID: ${analysisResult.job_id}`);
-    console.log(`Status: ${analysisResult.status}`);
-    console.log(`Report Path: ${analysisResult.report_path || 'NOT PROVIDED'}`);
+    // ✅ CRITICAL: report_path now contains GridFS file ID, not filesystem path
+    const reportId = analysisResult.report_path; // This is now a GridFS ObjectId string
+    
+    console.log(`Report ID (GridFS): ${reportId || 'NOT PROVIDED'}`);
     console.log(`Issues Count: ${analysisResult.issues?.length || 0}`);
-    console.log(`Summary:`, JSON.stringify(analysisResult.summary, null, 2));
-    console.log(`Metadata:`, JSON.stringify(analysisResult.metadata, null, 2));
-    console.log(`${'='.repeat(60)}\n`);
     
     // Prepare metadata
     const metadata = {
@@ -79,18 +77,17 @@ async function triggerAIAnalysis(jobId, filePath, uploadType) {
     };
     
     console.log(`📝 Updating job in database...`);
-    console.log(`   Report Path to save: ${analysisResult.report_path}`);
     
     // Update job with results
     const updatedJob = await Job.findByIdAndUpdate(
       jobId,
       {
         status: 'completed',
-        reportPath: analysisResult.report_path,
+        reportId: reportId ? new mongoose.Types.ObjectId(reportId) : null, // ✅ Store as ObjectId
         completedAt: new Date(),
         metadata: metadata
       },
-      { new: true } // Return updated document
+      { new: true }
     );
     
     if (!updatedJob) {
@@ -102,10 +99,7 @@ async function triggerAIAnalysis(jobId, filePath, uploadType) {
     console.log(`${'='.repeat(60)}`);
     console.log(`Job ID: ${updatedJob._id}`);
     console.log(`Status: ${updatedJob.status}`);
-    console.log(`Report Path: ${updatedJob.reportPath || 'NULL'}`);
-    console.log(`Completed At: ${updatedJob.completedAt}`);
-    console.log(`Issues: ${metadata.totalIssues} (${metadata.critical} critical, ${metadata.warnings} warnings)`);
-    console.log(`Cached: ${metadata.cached ? 'YES' : 'NO'}`);
+    console.log(`Report ID: ${updatedJob.reportId || 'NULL'}`); // ✅ Changed from reportPath
     console.log(`${'='.repeat(60)}\n`);
     
   } catch (error) {
@@ -113,27 +107,27 @@ async function triggerAIAnalysis(jobId, filePath, uploadType) {
     console.error(`❌ AI ANALYSIS FAILED`);
     console.error(`${'='.repeat(60)}`);
     console.error(`Job ID: ${jobId}`);
-    console.error(`Error Type: ${error.name}`);
-    console.error(`Error Message: ${error.message}`);
+    console.error(`Error: ${error.message}`);
     
-    if (error.response) {
-      console.error(`Response Status: ${error.response.status}`);
-      console.error(`Response Data:`, JSON.stringify(error.response.data, null, 2));
-    } else if (error.request) {
-      console.error(`No response received from AI service`);
-      console.error(`Request was made but no response`);
-    } else {
-      console.error(`Error setting up request: ${error.message}`);
+    // ✅ FIXED: Properly serialize error message
+    let errorMessage = error.message || 'AI analysis failed';
+    
+    if (error.response?.data?.detail) {
+      // If detail is an array (Pydantic validation errors), stringify it
+      if (Array.isArray(error.response.data.detail)) {
+        errorMessage = JSON.stringify(error.response.data.detail);
+      } else {
+        errorMessage = error.response.data.detail;
+      }
     }
     
-    console.error(`Stack Trace:`, error.stack);
     console.error(`${'='.repeat(60)}\n`);
     
     // Update job status to failed
     try {
       await Job.findByIdAndUpdate(jobId, {
         status: 'failed',
-        errorMessage: error.response?.data?.detail || error.message || 'AI analysis failed',
+        errorMessage: errorMessage, // ✅ Now properly serialized
         completedAt: new Date()
       });
       console.log(`✅ Job status updated to 'failed'`);
@@ -159,20 +153,22 @@ const uploadSnippet = async (req, res) => {
       });
     }
 
-    // Create user-specific upload directory
-    const uploadDir = path.join(__dirname, '../../uploads', req.user.id.toString());
-    await fs.mkdir(uploadDir, { recursive: true });
-
-    // Save snippet
+    // Save snippet to GridFS
     const snippetFileName = fileName || `snippet-${Date.now()}.${language}`;
-    const filePath = await saveSnippet(code, snippetFileName, uploadDir);
+    const uploadStream = gridfsBucket.openUploadStream(snippetFileName, {
+      contentType: 'text/plain'
+    });
+    uploadStream.write(code);
+    uploadStream.end();
+
+    const fileId = uploadStream.id;
 
     // Create job
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'snippet',
       fileName: snippetFileName,
-      filePath,
+      fileId: fileId.toString(),
       fileSize: Buffer.byteLength(code, 'utf-8'),
       metadata: {
         fileCount: 1,
@@ -187,8 +183,8 @@ const uploadSnippet = async (req, res) => {
       data: { job }
     });
 
-    // Trigger AI analysis asynchronously (don't wait for response)
-    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+    // Trigger AI analysis asynchronously
+    triggerAIAnalysis(job._id, job.fileId, job.uploadType).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 
@@ -218,10 +214,11 @@ const uploadZip = async (req, res) => {
     const file = req.files.file;
 
     // Validate file size
-    if (!validateFileSize(file.size)) {
+    const maxSize = (process.env.MAX_FILE_SIZE_MB || 50) * 1024 * 1024;
+    if (file.size > maxSize) {
       return res.status(400).json({
         success: false,
-        message: `File size exceeds maximum allowed size of ${process.env.MAX_FILE_SIZE_MB || 50}MB`
+        message: `File size exceeds maximum of ${process.env.MAX_FILE_SIZE_MB || 50}MB`
       });
     }
 
@@ -233,47 +230,35 @@ const uploadZip = async (req, res) => {
       });
     }
 
-    // Create user-specific upload directory
-    const uploadDir = path.join(__dirname, '../../uploads', req.user.id.toString());
-    await fs.mkdir(uploadDir, { recursive: true });
-
-    // Save ZIP file
+    // Save ZIP to GridFS
     const zipFileName = `upload-${Date.now()}-${file.name}`;
-    const zipPath = path.join(uploadDir, zipFileName);
-    await file.mv(zipPath);
+    const uploadStream = gridfsBucket.openUploadStream(zipFileName, {
+      contentType: 'application/zip'
+    });
+    uploadStream.write(file.data);
+    uploadStream.end();
 
-    // Extract ZIP
-    const extractPath = path.join(uploadDir, `extracted-${Date.now()}`);
-    await extractZip(zipPath, extractPath);
-
-    // Generate folder structure
-    const folderStructure = await generateFolderStructure(extractPath);
-
-    // Analyze directory
-    const metadata = await analyzeDirectory(extractPath);
+    const fileId = uploadStream.id;
 
     // Create job
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'zip',
       fileName: zipFileName,
-      filePath: extractPath,
+      fileId: fileId.toString(),
       fileSize: file.size,
-      folderStructure,
-      metadata
+      folderStructure: {},
+      metadata: {}
     });
 
     res.status(201).json({
       success: true,
-      message: 'ZIP file uploaded and extracted successfully',
-      data: {
-        job,
-        folderStructure
-      }
+      message: 'ZIP file uploaded successfully',
+      data: { job }
     });
 
     // Trigger AI analysis asynchronously
-    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+    triggerAIAnalysis(job._id, job.fileId, job.uploadType).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 
@@ -302,61 +287,49 @@ const uploadFolder = async (req, res) => {
 
     const files = Array.isArray(req.files.files) ? req.files.files : [req.files.files];
 
-    // Create user-specific upload directory
-    const uploadDir = path.join(__dirname, '../../uploads', req.user.id.toString());
-    const folderPath = path.join(uploadDir, `folder-${Date.now()}`);
-    await fs.mkdir(folderPath, { recursive: true });
-
-    // Save all files
     let totalSize = 0;
+    const fileIds = [];
+
     for (const file of files) {
       totalSize += file.size;
-      
-      // Recreate folder structure from file path
-      const relativePath = file.name;
-      const filePath = path.join(folderPath, relativePath);
-      const fileDir = path.dirname(filePath);
-      
-      await fs.mkdir(fileDir, { recursive: true });
-      await file.mv(filePath);
+
+      const uploadStream = gridfsBucket.openUploadStream(file.name, {
+        contentType: file.mimetype
+      });
+      uploadStream.write(file.data);
+      uploadStream.end();
+
+      fileIds.push(uploadStream.id.toString());
     }
 
     // Validate total size
-    if (!validateFileSize(totalSize)) {
+    const maxSize = (process.env.MAX_FILE_SIZE_MB || 50) * 1024 * 1024;
+    if (totalSize > maxSize) {
       return res.status(400).json({
         success: false,
-        message: `Total folder size exceeds maximum allowed size of ${process.env.MAX_FILE_SIZE_MB || 50}MB`
+        message: `Total size exceeds maximum of ${process.env.MAX_FILE_SIZE_MB || 50}MB`
       });
     }
-
-    // Generate folder structure
-    const folderStructure = await generateFolderStructure(folderPath);
-
-    // Analyze directory
-    const metadata = await analyzeDirectory(folderPath);
 
     // Create job
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'folder',
-      fileName: path.basename(folderPath),
-      filePath: folderPath,
+      fileName: `folder-${Date.now()}`,
+      fileIds,
       fileSize: totalSize,
-      folderStructure,
-      metadata
+      folderStructure: {},
+      metadata: {}
     });
 
     res.status(201).json({
       success: true,
       message: 'Folder uploaded successfully',
-      data: {
-        job,
-        folderStructure
-      }
+      data: { job }
     });
 
     // Trigger AI analysis asynchronously
-    triggerAIAnalysis(job._id, job.filePath, job.uploadType).catch(err => {
+    triggerAIAnalysis(job._id, job.fileIds[0], job.uploadType).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 
@@ -408,7 +381,6 @@ const getJob = async (req, res) => {
       });
     }
 
-    // Ensure user owns this job
     if (job.userId.toString() !== req.user.id.toString()) {
       return res.status(403).json({
         success: false,

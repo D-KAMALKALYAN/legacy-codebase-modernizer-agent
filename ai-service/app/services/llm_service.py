@@ -78,7 +78,8 @@ class LLMService:
                         "content": prompt
                     }
                 ],
-                temperature=0.3,
+                temperature=0.1,
+                seed = 42,
                 max_tokens=4000
             )
             

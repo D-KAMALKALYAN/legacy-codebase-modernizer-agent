@@ -4,12 +4,12 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.api.endpoints import router
+from app.storage.storage_service import storage_service  # ✅ NEW
 import logging
 import signal
 import sys
 import asyncio
 
-# Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -17,22 +17,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# GRACEFUL SHUTDOWN STATE
-# ============================================================
 is_shutting_down = False
 active_requests = 0
 
-# ============================================================
-# LIFESPAN CONTEXT MANAGER
-# ============================================================
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan event handler with graceful shutdown
-    Handles startup and shutdown events
-    """
+    """Lifespan event handler with storage initialization"""
     # ==================== STARTUP ====================
     logger.info("=" * 60)
     logger.info("🚀 Legacy Code Modernization AI Service Starting...")
@@ -40,7 +30,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"LLM Provider: {settings.LLM_PROVIDER}")
     
-    # Show correct model based on provider
     if settings.LLM_PROVIDER == "ollama":
         logger.info(f"LLM Model: {settings.OLLAMA_MODEL}")
     elif settings.LLM_PROVIDER == "openai":
@@ -48,9 +37,9 @@ async def lifespan(app: FastAPI):
     elif settings.LLM_PROVIDER == "anthropic":
         logger.info(f"LLM Model: {settings.ANTHROPIC_MODEL}")
     
+    logger.info(f"Storage Backend: {settings.STORAGE_BACKEND.upper()}")  # ✅ NEW
     logger.info(f"Redis Enabled: {settings.REDIS_ENABLED}")
     if settings.REDIS_ENABLED:
-        # Mask Redis password in URL
         redis_url_masked = settings.REDIS_URL
         if "@" in redis_url_masked:
             parts = redis_url_masked.split("@")
@@ -59,7 +48,23 @@ async def lifespan(app: FastAPI):
     logger.info(f"Max Tokens Per Request: {settings.MAX_TOKENS_PER_REQUEST}")
     logger.info("=" * 60)
     
-    # Yield control to FastAPI (app runs here)
+    # ============================================================
+    # INITIALIZE STORAGE BACKEND (NEW)
+    # ============================================================
+    try:
+        storage_config = settings.get_storage_config()
+        storage_service.initialize(**storage_config)
+        await storage_service.connect()
+        logger.info(f"✅ Storage backend initialized: {storage_service.backend_type}")
+    except Exception as e:
+        logger.error(f"❌ Storage initialization failed: {e}")
+        raise
+    
+    # Initialize cache (Redis) - removed explicit connect to avoid AttributeError
+    # If needed, implement connect() in cache_service.py
+    if settings.REDIS_ENABLED:
+        from app.services.cache_service import cache_service
+    
     yield
     
     # ==================== SHUTDOWN ====================
@@ -70,8 +75,6 @@ async def lifespan(app: FastAPI):
     global is_shutting_down
     is_shutting_down = True
     
-    # Wait for active requests to complete (max 25s)
-    # Railway/Render give 30s total, reserve 5s for cleanup
     logger.info(f"⏳ Waiting for {active_requests} active requests to complete...")
     
     shutdown_timeout = 25
@@ -81,34 +84,31 @@ async def lifespan(app: FastAPI):
         await asyncio.sleep(0.5)
         wait_time += 0.5
         
-        # Log every 5 seconds
         if wait_time % 5 == 0 and active_requests > 0:
             logger.info(f"⏳ Still waiting... {active_requests} requests active")
     
     if active_requests > 0:
-        logger.warning(
-            f"⚠️  Shutdown timeout reached. "
-            f"{active_requests} requests will be terminated."
-        )
+        logger.warning(f"⚠️ Shutdown timeout. {active_requests} requests terminated.")
     else:
-        logger.info("✅ All requests completed successfully")
+        logger.info("✅ All requests completed")
     
     # Close connections
     try:
-        # Close Redis/cache if needed
-        from app.services.cache_service import cache_service
-        if hasattr(cache_service, 'close'):
-            await cache_service.close()
-            logger.info("✅ Cache connection closed")
+        if settings.REDIS_ENABLED:
+            from app.services.cache_service import cache_service
+            if hasattr(cache_service, 'close'):
+                await cache_service.close()
+                logger.info("✅ Cache connection closed")
+        
+        # Close storage connection
+        await storage_service.close()
+        logger.info("✅ Storage connection closed")
+        
     except Exception as e:
-        logger.error(f"❌ Error closing cache: {e}")
+        logger.error(f"❌ Error during shutdown: {e}")
     
     logger.info("✅ Graceful shutdown complete")
     logger.info("=" * 60)
-
-# ============================================================
-# CREATE FASTAPI APP
-# ============================================================
 
 app = FastAPI(
     title="Legacy Code Modernization AI Service",
@@ -117,44 +117,29 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ============================================================
-# MIDDLEWARE: TRACK ACTIVE REQUESTS
-# ============================================================
-
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
-    """
-    Track active requests for graceful shutdown
-    Reject new requests during shutdown
-    """
+    """Track active requests for graceful shutdown"""
     global active_requests, is_shutting_down
     
-    # Reject new requests during shutdown
     if is_shutting_down:
         return JSONResponse(
             status_code=503,
             content={
                 "error": "Service Unavailable",
-                "message": "AI service is shutting down. Please retry in 30 seconds."
+                "message": "AI service is shutting down. Retry in 30 seconds."
             }
         )
     
-    # Increment counter
     active_requests += 1
     logger.debug(f"📥 Request started: {request.url.path} | Active: {active_requests}")
     
     try:
-        # Process request
         response = await call_next(request)
         return response
     finally:
-        # Decrement counter
         active_requests -= 1
-        logger.debug(f"📤 Request completed: {request.url.path} | Active: {active_requests}")
-
-# ============================================================
-# CORS MIDDLEWARE
-# ============================================================
+        logger.debug(f"📤 Request completed | Active: {active_requests}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -164,23 +149,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================
-# HEALTH CHECK ENDPOINT
-# ============================================================
-
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint for deployment platforms
-    Returns 503 during shutdown for load balancers
-    """
+    """Health check endpoint"""
     if is_shutting_down:
         return JSONResponse(
             status_code=503,
-            content={
-                "status": "shutting_down",
-                "active_requests": active_requests
-            }
+            content={"status": "shutting_down", "active_requests": active_requests}
         )
     
     from app.services.llm_service import llm_service
@@ -189,40 +164,27 @@ async def health_check():
         "status": "healthy",
         "provider": llm_service.provider,
         "model": llm_service.model,
-        "active_requests": active_requests,
-        "uptime": "N/A"  # Could track this if needed
+        "storage_backend": storage_service.backend_type,  # ✅ NEW
+        "active_requests": active_requests
     }
-
-# ============================================================
-# INCLUDE API ROUTES
-# ============================================================
 
 app.include_router(router)
 
-# ============================================================
-# SIGNAL HANDLERS (for local development & Docker)
-# ============================================================
-
 def handle_sigterm(signum, frame):
-    """Handle SIGTERM signal from deployment platforms"""
+    """Handle SIGTERM"""
     logger.info("🛑 Received SIGTERM signal")
     global is_shutting_down
     is_shutting_down = True
 
 def handle_sigint(signum, frame):
-    """Handle SIGINT signal (Ctrl+C)"""
-    logger.info("🛑 Received SIGINT (Ctrl+C)")
+    """Handle SIGINT (Ctrl+C)"""
+    logger.info("🛑 Received SIGINT")
     global is_shutting_down
     is_shutting_down = True
     sys.exit(0)
 
-# Register signal handlers
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigint)
-
-# ============================================================
-# RUN SERVER (for local development)
-# ============================================================
 
 if __name__ == "__main__":
     import uvicorn

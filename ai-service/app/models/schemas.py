@@ -5,7 +5,7 @@ from datetime import datetime
 class AnalysisRequest(BaseModel):
     """Request model for code analysis"""
     job_id: str = Field(..., description="Job ID from backend")
-    file_path: str = Field(..., description="Path to uploaded file/folder")
+    file_id: str = Field(..., description="Storage file ID (GridFS ID, S3 key, etc.)")  # ✅ CHANGED
     upload_type: str = Field(..., description="Type: snippet, folder, or zip")
     force_refresh: bool = Field(default=False, description="Skip cache and force new analysis")
 
@@ -41,6 +41,8 @@ class AnalysisMetadata(BaseModel):
     cost_estimate: float = Field(default=0.0, description="Estimated cost in USD")
     validation_applied: bool = True 
     min_confidence: float = 0.5 
+    storage_backend: Optional[str] = Field(None, description="Storage backend used")  # ✅ NEW
+
 class AnalysisResponse(BaseModel):
     """Response model for code analysis"""
     job_id: str
@@ -57,5 +59,5 @@ class HealthResponse(BaseModel):
     status: str
     llm_provider: str
     redis_connected: bool
+    storage_backend: str 
     timestamp: datetime
-

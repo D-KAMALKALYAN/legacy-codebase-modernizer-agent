@@ -12,49 +12,73 @@ logger = logging.getLogger(__name__)
 class ReportService:
     """Service for generating Markdown and PDF reports"""
     
-    @staticmethod
-    def generate_markdown(analysis_data: Dict[str, Any], job_id: str) -> str:
+    def __init__(self):
+        self.storage = None  # Will be injected
+    
+    def set_storage(self, storage_service):
+        """Inject storage service dependency"""
+        self.storage = storage_service
+    
+    async def generate_markdown(self, analysis_data: Dict[str, Any], job_id: str) -> str:
         """
-        Generate Markdown report
+        Generate Markdown report and upload to storage
         
         Args:
             analysis_data: Analysis results
             job_id: Job ID
             
         Returns:
-            Absolute path to generated report
+            File ID in storage system (GridFS ID, S3 key, etc.)
         """
         try:
-            # Get absolute path to reports directory
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            reports_dir = os.path.abspath(os.path.join(current_dir, "../../../reports"))
-            os.makedirs(reports_dir, exist_ok=True)
-            
             # Generate filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"report_{job_id}_{timestamp}.md"
-            filepath = os.path.abspath(os.path.join(reports_dir, filename))
             
             # Build markdown content
-            md_content = ReportService._build_markdown_content(analysis_data, job_id)
+            md_content = self._build_markdown_content(analysis_data, job_id)
             
-            # Write to file
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(md_content)
+            # ============================================================
+            # UPLOAD TO STORAGE (GridFS, S3, etc.) - NOT LOCAL FILESYSTEM
+            # ============================================================
+            if not self.storage:
+                # Fallback: Save locally if storage not available
+                logger.warning("⚠️ Storage service not available. Saving locally.")
+                return self._save_local_fallback(filename, md_content)
             
-            logger.info(f"✅ Markdown report generated: {filepath}")
+            # Upload to storage backend
+            logger.info(f"📤 Uploading report to {self.storage.backend_type}: {filename}")
+            file_id = await self.storage.write_file(
+                filename=filename,
+                content=md_content.encode('utf-8'),
+                content_type='text/markdown'
+            )
             
-            # Return absolute path
-            return filepath
+            logger.info(f"✅ Report uploaded to storage: {file_id}")
+            
+            # Return file ID (GridFS ObjectId, S3 key, etc.)
+            return file_id
             
         except Exception as e:
-            logger.error(f"❌ Failed to generate Markdown report: {e}")
+            logger.error(f"❌ Failed to generate/upload report: {e}")
             raise
     
-    @staticmethod
-    def _build_markdown_content(data: Dict[str, Any], job_id: str) -> str:
+    def _save_local_fallback(self, filename: str, content: str) -> str:
+        """Fallback: Save locally and return path (for backward compatibility)"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        reports_dir = os.path.abspath(os.path.join(current_dir, "../../../reports"))
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        filepath = os.path.abspath(os.path.join(reports_dir, filename))
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        logger.info(f"✅ Report saved locally: {filepath}")
+        return filepath
+    
+    def _build_markdown_content(self, data: Dict[str, Any], job_id: str) -> str:
         """Build markdown report content"""
-        # Data is already in dict format from modernization_engine
         summary = data.get("summary", {})
         issues = data.get("issues", [])
         analysis = data.get("analysis", {})
@@ -151,6 +175,7 @@ class ReportService:
 - **Cached Result:** {'Yes' if metadata.get('cached') else 'No'}
 - **Tokens Used:** {metadata.get('tokens_used', 0):,}
 - **Model Provider:** {metadata.get('model', 'N/A').split('-')[0].title()}
+- **Storage Backend:** {metadata.get('storage_backend', 'N/A').upper()}
 
 ---
 
@@ -159,34 +184,30 @@ class ReportService:
         
         return md
     
-    @staticmethod
-    def generate_pdf(analysis_data: Dict[str, Any], job_id: str) -> str:
+    async def generate_pdf(self, analysis_data: Dict[str, Any], job_id: str) -> str:
         """
-        Generate PDF report
+        Generate PDF report and upload to storage
         
         Args:
             analysis_data: Analysis results
             job_id: Job ID
             
         Returns:
-            Path to generated PDF
+            File ID in storage system
         """
         try:
-            # Create reports directory
-            reports_dir = os.path.join(os.path.dirname(__file__), "../../../reports")
-            os.makedirs(reports_dir, exist_ok=True)
-            
             # Generate filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"report_{job_id}_{timestamp}.pdf"
-            filepath = os.path.join(reports_dir, filename)
             
-            # Create PDF
-            doc = SimpleDocTemplate(filepath, pagesize=letter)
+            # Create PDF in memory
+            import io
+            pdf_buffer = io.BytesIO()
+            
+            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
             styles = getSampleStyleSheet()
             story = []
             
-            # Data is already in dict format
             metadata = analysis_data.get('metadata', {})
             summary = analysis_data.get('summary', {})
             
@@ -240,12 +261,42 @@ class ReportService:
             # Build PDF
             doc.build(story)
             
-            logger.info(f"✅ PDF report generated: {filepath}")
-            return filepath
+            # Get PDF bytes
+            pdf_bytes = pdf_buffer.getvalue()
+            pdf_buffer.close()
+            
+            # Upload to storage
+            if not self.storage:
+                logger.warning("⚠️ Storage service not available. Saving PDF locally.")
+                return self._save_pdf_local_fallback(filename, pdf_bytes)
+            
+            logger.info(f"📤 Uploading PDF to {self.storage.backend_type}: {filename}")
+            file_id = await self.storage.write_file(
+                filename=filename,
+                content=pdf_bytes,
+                content_type='application/pdf'
+            )
+            
+            logger.info(f"✅ PDF uploaded to storage: {file_id}")
+            return file_id
             
         except Exception as e:
-            logger.error(f"❌ Failed to generate PDF report: {e}")
+            logger.error(f"❌ Failed to generate/upload PDF: {e}")
             raise
+    
+    def _save_pdf_local_fallback(self, filename: str, content: bytes) -> str:
+        """Fallback: Save PDF locally"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        reports_dir = os.path.abspath(os.path.join(current_dir, "../../../reports"))
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        filepath = os.path.abspath(os.path.join(reports_dir, filename))
+        
+        with open(filepath, 'wb') as f:
+            f.write(content)
+        
+        logger.info(f"✅ PDF saved locally: {filepath}")
+        return filepath
 
 # Global instance
 report_service = ReportService()

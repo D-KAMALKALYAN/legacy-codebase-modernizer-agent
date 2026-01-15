@@ -1,3 +1,8 @@
+"""
+Cache service for storing analysis results in Redis
+FIXED: Content-based hashing (no file I/O)
+"""
+
 import redis
 import json
 import hashlib
@@ -6,6 +11,7 @@ from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 class CacheService:
     """Redis caching service for LLM responses"""
@@ -28,47 +34,39 @@ class CacheService:
                 logger.warning(f"⚠️ Redis connection failed: {e}. Caching disabled.")
                 self.enabled = False
     
-    def generate_cache_key(self, file_path: str, upload_type: str) -> str:
+    def generate_cache_key(self, content: str, upload_type: str) -> str:
         """
-        Generate unique cache key based on file content
+        Generate unique cache key based on CODE CONTENT (not file path)
         
         Args:
-            file_path: Path to file/folder
+            content: The actual code content as a string
             upload_type: Type of upload (snippet, folder, zip)
             
         Returns:
             Cache key string
         """
         try:
-            # Read file content
-            if upload_type == "snippet":
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            else:
-                # For folders/zips, hash the directory structure and file contents
-                import os
-                content_parts = []
-                for root, dirs, files in os.walk(file_path):
-                    for file in sorted(files):
-                        if not file.startswith('.'):
-                            file_path_full = os.path.join(root, file)
-                            try:
-                                with open(file_path_full, 'r', encoding='utf-8') as f:
-                                    content_parts.append(f"{file}:{f.read()}")
-                            except:
-                                pass  # Skip binary files
-                content = "\n".join(content_parts)
+            # Normalize content (strip whitespace for consistent hashing)
+            normalized_content = content.strip()
             
-            # Create hash
-            content_with_type = f"{upload_type}:{content}"
-            hash_object = hashlib.sha256(content_with_type.encode())
-            cache_key = f"analysis:{hash_object.hexdigest()}"
+            # Include upload type in hash to prevent collisions
+            content_with_type = f"{upload_type}:{normalized_content}"
             
+            # Create SHA-256 hash
+            hash_object = hashlib.sha256(content_with_type.encode('utf-8'))
+            content_hash = hash_object.hexdigest()
+            
+            cache_key = f"analysis:{upload_type}:{content_hash}"
+            
+            logger.debug(f"✅ Cache key generated: {cache_key[:60]}...")
             return cache_key
+            
         except Exception as e:
             logger.error(f"❌ Error generating cache key: {e}")
-            # Return unique key to skip caching for this request
-            return f"analysis:error:{hashlib.sha256(str(e).encode()).hexdigest()}"
+            # Return unique error key that won't match anything
+            import time
+            error_hash = hashlib.sha256(f"error:{time.time()}".encode()).hexdigest()
+            return f"analysis:error:{error_hash}"
     
     def get(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """
@@ -81,15 +79,16 @@ class CacheService:
             Cached result or None
         """
         if not self.enabled or not self.client:
+            logger.debug("Cache disabled or not connected")
             return None
         
         try:
             cached_data = self.client.get(cache_key)
             if cached_data:
-                logger.info(f"✅ Cache HIT for key: {cache_key[:20]}...")
+                logger.info(f"✅ Cache HIT for key: {cache_key[:60]}...")
                 return json.loads(cached_data)
             else:
-                logger.info(f"❌ Cache MISS for key: {cache_key[:20]}...")
+                logger.info(f"❌ Cache MISS for key: {cache_key[:60]}...")
                 return None
         except Exception as e:
             logger.error(f"❌ Redis GET error: {e}")
@@ -108,6 +107,7 @@ class CacheService:
             Success boolean
         """
         if not self.enabled or not self.client:
+            logger.debug("Cache disabled or not connected")
             return False
         
         try:
@@ -138,28 +138,20 @@ class CacheService:
                 serialized_data
             )
             
-            logger.info(f"✅ Cached result for key: {cache_key[:20]}... (TTL: {ttl}s)")
+            logger.info(f"✅ Cached result for key: {cache_key[:60]}... (TTL: {ttl}s)")
             return True
         except Exception as e:
             logger.error(f"❌ Redis SET error: {e}")
             return False
     
     def delete(self, cache_key: str) -> bool:
-        """
-        Delete cached result
-        
-        Args:
-            cache_key: Cache key to delete
-            
-        Returns:
-            Success boolean
-        """
+        """Delete cached result"""
         if not self.enabled or not self.client:
             return False
         
         try:
             self.client.delete(cache_key)
-            logger.info(f"✅ Deleted cache key: {cache_key[:20]}...")
+            logger.info(f"✅ Deleted cache key: {cache_key[:60]}...")
             return True
         except Exception as e:
             logger.error(f"❌ Redis DELETE error: {e}")
@@ -168,7 +160,7 @@ class CacheService:
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics"""
         if not self.enabled or not self.client:
-            return {"enabled": False}
+            return {"enabled": False, "connected": False}
         
         try:
             info = self.client.info()
@@ -182,6 +174,7 @@ class CacheService:
         except Exception as e:
             logger.error(f"❌ Redis stats error: {e}")
             return {"enabled": True, "connected": False, "error": str(e)}
+
 
 # Global cache instance
 cache_service = CacheService()

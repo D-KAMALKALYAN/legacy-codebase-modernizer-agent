@@ -1,6 +1,6 @@
 """
-Core engine for code modernization analysis - WITH VALIDATION
-File: app/services/modernization_engine.py
+Core engine for code modernization analysis - STORAGE-AGNOSTIC
+Works with ANY storage backend (GridFS, S3, Local)
 """
 
 import os
@@ -12,8 +12,8 @@ import logging
 from app.config import settings
 from app.services.cache_service import cache_service
 from app.services.llm_service import llm_service
-from app.services.validation_service import validation_service  # NEW
-from app.utils.file_reader import file_reader
+from app.services.validation_service import validation_service
+from app.storage.storage_service import storage_service  # ✅ NEW: Abstract storage
 from app.utils.token_counter import token_counter
 from app.models.schemas import CodeIssue, AnalysisSummary, AnalysisMetadata
 
@@ -26,7 +26,8 @@ class ModernizationEngine:
     def __init__(self):
         self.prompt_template = self._load_prompt_template()
         self.llm_service = llm_service
-        self.validation_service = validation_service  # NEW
+        self.validation_service = validation_service
+        self.storage = storage_service  # ✅ NEW
     
     def _load_prompt_template(self) -> str:
         """Load prompt template from file"""
@@ -39,20 +40,19 @@ class ModernizationEngine:
                 return f.read()
         except Exception as e:
             logger.error(f"Failed to load prompt template: {e}")
-            # Fallback minimal template
             return "Analyze this code and return JSON with issues, summary, and recommendations:\n\n{code_files}"
     
     async def analyze(
         self,
-        file_path: str,
+        file_id: str,  # ✅ CHANGED: Now accepts file_id instead of file_path
         upload_type: str,
         force_refresh: bool = False
     ) -> Dict[str, Any]:
         """
-        Main analysis entry point
+        Main analysis entry point - STORAGE-AGNOSTIC
         
         Args:
-            file_path: Path to uploaded file/folder
+            file_id: Storage file ID (GridFS ID, S3 key, local path, etc.)
             upload_type: Type: snippet, folder, zip
             force_refresh: Skip cache if True
             
@@ -61,39 +61,51 @@ class ModernizationEngine:
         """
         start_time = time.time()
         
-        # Generate cache key
-        cache_key = cache_service.generate_cache_key(file_path, upload_type)
+        # ============================================================
+        # STEP 1: READ FILE FROM STORAGE
+        # ============================================================
+        logger.info(f"📖 Reading file from storage: {file_id}")
+        try:
+            code_content = await self.storage.read_file_as_text(file_id)
+            logger.info(f"✅ File loaded: {len(code_content)} characters")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File not found in storage: {file_id}")
+        except Exception as e:
+            logger.error(f"❌ Storage read error: {e}")
+            raise
         
-        # Check cache (unless force_refresh)
+        # ============================================================
+        # STEP 2: GENERATE CACHE KEY FROM CONTENT (not file_id)
+        # ============================================================
+        cache_key = cache_service.generate_cache_key(code_content, upload_type)
+        logger.info(f"🔑 Cache key: {cache_key[:60]}...")
+        
+        # ============================================================
+        # STEP 3: CHECK CACHE
+        # ============================================================
         if not force_refresh:
             cached_result = cache_service.get(cache_key)
             if cached_result:
                 logger.info("✅ Returning cached analysis result")
                 cached_result["metadata"]["cached"] = True
                 cached_result["metadata"]["processing_time"] = time.time() - start_time
+                cached_result["metadata"]["storage_backend"] = self.storage.backend_type
                 return cached_result
         
-        # Read files
-        logger.info(f"Reading files from {file_path}")
-        if upload_type == "snippet":
-            file_name, content = file_reader.read_file(file_path)
-            files_data = [{
-                "path": file_name,
-                "name": file_name,
-                "content": content,
-                "lines": len(content.split('\n'))
-            }]
-        else:
-            files_data = file_reader.read_directory(
-                file_path,
-                max_files=settings.MAX_FILES_PER_ANALYSIS
-            )
+        # Parse file data (for V1, treating everything as single file)
+        # In V2, we'll handle ZIP extraction and folder structures
+        files_data = [{
+            "path": file_id,
+            "name": f"uploaded_{upload_type}",
+            "content": code_content,
+            "lines": len(code_content.split('\n'))
+        }]
         
         if not files_data:
             raise ValueError("No valid code files found to analyze")
         
         # Get file stats
-        stats = file_reader.get_file_stats(files_data)
+        stats = self._get_file_stats(files_data)
         
         # Build prompt
         prompt = self._build_prompt(files_data)
@@ -107,7 +119,6 @@ class ModernizationEngine:
         
         # Check token limit
         if input_tokens > settings.MAX_TOKENS_PER_REQUEST:
-            # Chunk files if needed (V1: Simple truncation)
             logger.warning(
                 f"Token limit exceeded ({input_tokens} > {settings.MAX_TOKENS_PER_REQUEST}). "
                 f"Truncating."
@@ -127,13 +138,11 @@ class ModernizationEngine:
         output_tokens = llm_metadata.get("tokens_output", 0)
         total_tokens = llm_metadata.get("tokens_total", input_tokens)
         
-        # ============================================================
-        # NEW: VALIDATE LLM RESPONSE TO PREVENT HALLUCINATIONS
-        # ============================================================
+        # Validate LLM response
         validated_response = self.validation_service.validate_analysis(
             llm_response=llm_response,
             original_code=original_code,
-            job_id=cache_key[:8]  # Use first 8 chars of cache key as job ID
+            job_id=cache_key[:8]
         )
         
         # Calculate cost
@@ -145,13 +154,13 @@ class ModernizationEngine:
         
         # Build response with validated data
         result = {
-            "analysis": validated_response,  # Use validated response
+            "analysis": validated_response,
             "issues": [
                 issue if isinstance(issue, dict) else issue.model_dump() 
                 for issue in self._parse_issues(validated_response.get("issues", []))
             ],
             "summary": self._build_summary(
-                validated_response.get("summary", {}),  # Use validated summary
+                validated_response.get("summary", {}),
                 stats
             ).model_dump(),
             "metadata": {
@@ -161,8 +170,9 @@ class ModernizationEngine:
                 "model": llm_metadata.get("model", settings.OPENAI_MODEL),
                 "processing_time": time.time() - start_time,
                 "cost_estimate": cost_estimate,
-                "validation_applied": True,  # NEW: Flag that validation was applied
-                "min_confidence": self.validation_service.min_confidence  # NEW
+                "validation_applied": True,
+                "min_confidence": self.validation_service.min_confidence,
+                "storage_backend": self.storage.backend_type  # ✅ NEW
             }
         }
         
@@ -176,6 +186,70 @@ class ModernizationEngine:
         
         return result
     
+    def _get_file_stats(self, files_data: List[Dict[str, str]]) -> Dict:
+        """Get file statistics with proper language detection"""
+        total_lines = sum(f['lines'] for f in files_data)
+        
+        # Detect languages from file content
+        languages = self._detect_languages(files_data)
+        
+        return {
+            "total_files": len(files_data),
+            "total_lines": total_lines,
+            "languages": languages
+        }
+    
+    def _detect_languages(self, files_data: List[Dict[str, str]]) -> List[str]:
+        """
+        Detect programming languages from code content
+        Simple heuristic-based detection for V1
+        """
+        detected = set()
+        
+        for file_data in files_data:
+            content = file_data.get('content', '').lower()
+            
+            # JavaScript/TypeScript detection
+            if any(keyword in content for keyword in ['function', 'const ', 'let ', 'var ', '=>', 'console.log']):
+                if 'interface ' in content or 'type ' in content or ': string' in content:
+                    detected.add('typescript')
+                else:
+                    detected.add('javascript')
+            
+            # Python detection
+            elif any(keyword in content for keyword in ['def ', 'import ', 'class ', 'print(', '__init__']):
+                detected.add('python')
+            
+            # Java detection
+            elif any(keyword in content for keyword in ['public class', 'private ', 'void ', 'System.out']):
+                detected.add('java')
+            
+            # C/C++ detection
+            elif any(keyword in content for keyword in ['#include', 'int main', 'printf(', 'std::']):
+                if 'std::' in content or 'cout' in content:
+                    detected.add('cpp')
+                else:
+                    detected.add('c')
+            
+            # Go detection
+            elif any(keyword in content for keyword in ['func ', 'package ', 'import (', 'fmt.Print']):
+                detected.add('go')
+            
+            # Ruby detection
+            elif any(keyword in content for keyword in ['def ', 'end', 'puts ', 'require ']):
+                detected.add('ruby')
+            
+            # PHP detection
+            elif '<?php' in content or '$_' in content:
+                detected.add('php')
+            
+            # Rust detection
+            elif any(keyword in content for keyword in ['fn ', 'let mut', 'impl ', 'use std::']):
+                detected.add('rust')
+        
+        # If no language detected, return "unknown"
+        return list(detected) if detected else ['unknown']
+    
     def _extract_original_code(self, files_data: List[Dict[str, str]]) -> str:
         """Extract all code content for validation"""
         code_parts = []
@@ -185,11 +259,10 @@ class ModernizationEngine:
     
     def _build_prompt(self, files_data: List[Dict[str, str]]) -> str:
         """Build prompt from files"""
-        # Format files for prompt
         code_files_str = ""
         for idx, file_data in enumerate(files_data, 1):
             code_files_str += f"\n## File {idx}: {file_data['path']}\n"
-            code_files_str += f"```{file_data.get('extension', '').lstrip('.')}\n"
+            code_files_str += f"```\n"
             code_files_str += file_data['content']
             code_files_str += "\n```\n"
         
@@ -200,9 +273,8 @@ class ModernizationEngine:
         issues = []
         for issue in issues_raw:
             try:
-                # Ensure confidence field exists
                 if "confidence" not in issue:
-                    issue["confidence"] = 0.8  # Default confidence
+                    issue["confidence"] = 0.8
                 issues.append(CodeIssue(**issue))
             except Exception as e:
                 logger.warning(f"Failed to parse issue: {e}")
