@@ -131,11 +131,33 @@ class GridFSStorage(StorageInterface):
         except Exception as e:
             logger.error(f"❌ GridFS read error: {type(e).__name__}: {e}")
             raise
-    
+
     async def read_file_as_text(self, file_id: str, encoding: str = 'utf-8') -> str:
-        """Read file as text"""
+        """Read file as text with fallback for binary files"""
         content = await self.read_file(file_id)
-        return content.decode(encoding)
+        
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError as e:
+            # Get file metadata to check type
+            try:
+                metadata = await self.get_file_metadata(file_id)
+                filename = metadata.get('filename', '')
+                
+                # Check if it's a known binary format
+                if filename.endswith(('.zip', '.tar', '.gz', '.bin', '.exe', '.pdf')):
+                    raise ValueError(
+                        f"Cannot read binary file as text: {filename}. "
+                        f"File appears to be a ZIP or binary format. Use upload_type='zip' for ZIP files."
+                    )
+            except Exception:
+                pass
+            
+            # Re-raise original error with helpful message
+            raise ValueError(
+                f"Failed to decode file as {encoding}: {str(e)}. "
+                f"File may be binary or use a different encoding."
+            )
     
     async def write_file(self, filename: str, content: bytes, content_type: str = 'text/plain') -> str:
         """

@@ -35,6 +35,7 @@ const ReportPage = () => {
       const response = await apiRequest(ENDPOINTS.REPORT(jobId));
       if (response.success) {
         setReport(response.data);
+        console.log('📊 Report data:', response.data);
       }
     } catch (err) {
       setError(err.message || 'Failed to load report');
@@ -43,101 +44,23 @@ const ReportPage = () => {
     }
   };
 
-  // Calculate accurate counts from report content
-  // const getIssueCounts = () => {
-  //   if (!report?.reportContent) {
-  //     return { total: 0, critical: 0, warnings: 0, info: 0 };
-  //   }
-
-  //   // Priority 1: Try to extract from metadata
-  //   if (report.metadata && typeof report.metadata.totalIssues === 'number') {
-  //     return {
-  //       total: report.metadata.totalIssues || 0,
-  //       critical: report.metadata.critical || 0,
-  //       warnings: report.metadata.warnings || 0,
-  //       info: report.metadata.info || 0,
-  //     };
-  //   }
-
-  //   // Priority 2: Parse from markdown content (multiple patterns)
-  //   const content = report.reportContent;
-    
-  //   // Try different markdown patterns
-  //   let critical = 0, warnings = 0, info = 0, total = 0;
-    
-  //   // Pattern 1: "**Critical:** 2 🔴"
-  //   const criticalMatch1 = content.match(/\*\*Critical:\*\*\s*(\d+)/i);
-  //   if (criticalMatch1) critical = parseInt(criticalMatch1[1]);
-    
-  //   // Pattern 2: "- **Critical:** 2"
-  //   const criticalMatch2 = content.match(/[-•]\s*\*\*Critical:\*\*\s*(\d+)/i);
-  //   if (criticalMatch2) critical = parseInt(criticalMatch2[1]);
-    
-  //   // Pattern 3: Count "## Critical Issues" sections
-  //   if (critical === 0) {
-  //     const criticalSections = content.match(/###?\s*\d+\.\s*[^#\n]+/g);
-  //     const criticalHeader = content.match(/##\s*Critical Issues/i);
-  //     if (criticalHeader && criticalSections) {
-  //       const criticalIndex = content.indexOf(criticalHeader[0]);
-  //       const warningIndex = content.indexOf('## Warnings');
-  //       const criticalContent = warningIndex > 0 
-  //         ? content.substring(criticalIndex, warningIndex)
-  //         : content.substring(criticalIndex);
-  //       const matches = criticalContent.match(/###?\s*\d+\./g);
-  //       critical = matches ? matches.length : 0;
-  //     }
-  //   }
-    
-  //   // Similar for warnings
-  //   const warningMatch1 = content.match(/\*\*Warnings?:\*\*\s*(\d+)/i);
-  //   if (warningMatch1) warnings = parseInt(warningMatch1[1]);
-    
-  //   const warningMatch2 = content.match(/[-•]\s*\*\*Warnings?:\*\*\s*(\d+)/i);
-  //   if (warningMatch2) warnings = parseInt(warningMatch2[1]);
-    
-  //   // Count warning sections
-  //   if (warnings === 0) {
-  //     const warningHeader = content.match(/##\s*Warnings/i);
-  //     if (warningHeader) {
-  //       const warningIndex = content.indexOf(warningHeader[0]);
-  //       const nextSection = content.indexOf('##', warningIndex + 3);
-  //       const warningContent = nextSection > 0
-  //         ? content.substring(warningIndex, nextSection)
-  //         : content.substring(warningIndex);
-  //       const matches = warningContent.match(/###?\s*\d+\./g);
-  //       warnings = matches ? matches.length : 0;
-  //     }
-  //   }
-    
-  //   // Info issues
-  //   const infoMatch = content.match(/\*\*Info:\*\*\s*(\d+)/i);
-  //   if (infoMatch) info = parseInt(infoMatch[1]);
-    
-  //   // Total issues
-  //   const totalMatch = content.match(/\*\*Total Issues:\*\*\s*(\d+)/i);
-  //   if (totalMatch) {
-  //     total = parseInt(totalMatch[1]);
-  //   } else {
-  //     total = critical + warnings + info;
-  //   }
-
-  //   console.log('Extracted counts:', { total, critical, warnings, info });
-    
-  //   return { total, critical, warnings, info };
-  // };
-
+  // ✅ FIXED: Use metadata from backend response
   const getIssueCounts = () => {
-  if (!report?.summary) {
-    return { total: 0, critical: 0, warnings: 0, info: 0 };
-  }
+    if (!report?.metadata) {
+      console.warn('⚠️ No metadata found in report');
+      return { total: 0, critical: 0, warnings: 0, info: 0 };
+    }
 
-  return {
-    total: report.summary.total_issues || 0,
-    critical: report.summary.critical || 0,
-    warnings: report.summary.warnings || 0,
-    info: report.summary.info || 0,
+    const counts = {
+      total: report.metadata.totalIssues || 0,
+      critical: report.metadata.critical || 0,
+      warnings: report.metadata.warnings || 0,
+      info: report.metadata.info || 0,
+    };
+
+    console.log('✅ Issue counts:', counts);
+    return counts;
   };
-};
 
   const issueCounts = getIssueCounts();
 
@@ -145,20 +68,15 @@ const ReportPage = () => {
     const token = localStorage.getItem('token');
     const url = `${API_URL}${ENDPOINTS.DOWNLOAD_REPORT(jobId)}`;
     
-    // Create temporary link and trigger download
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `report-${jobId}.md`);
-    link.style.display = 'none';
-    
-    // Add authorization header via fetch and create blob
     fetch(url, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(res => res.blob())
       .then(blob => {
         const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
         link.href = url;
+        link.setAttribute('download', `report-${jobId}.md`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -244,7 +162,7 @@ const ReportPage = () => {
             </div>
           </div>
 
-          {/* Stats */}
+          {/* Stats - Now showing correct counts */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-gray-200 dark:border-dark-border">
             <div>
               <p className="text-sm text-gray-600 dark:text-gray-400">Total Issues</p>
@@ -264,18 +182,25 @@ const ReportPage = () => {
                 {issueCounts.warnings}
               </p>
             </div>
-            {report.metadata?.cached && (
-              <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Status</p>
-                <div className="flex items-center space-x-1 mt-1">
-                  <CheckCircle2 className="w-5 h-5 text-green-500" />
-                  <span className="font-medium text-green-600 dark:text-green-400">
-                    Cached
-                  </span>
-                </div>
-              </div>
-            )}
+            <div>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Info</p>
+              <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                {issueCounts.info}
+              </p>
+            </div>
           </div>
+
+          {/* Additional metadata */}
+          {report.metadata?.cached && (
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-dark-border">
+              <div className="flex items-center space-x-2">
+                <CheckCircle2 className="w-5 h-5 text-green-500" />
+                <span className="text-sm font-medium text-green-600 dark:text-green-400">
+                  Results cached for faster loading
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Report Content */}

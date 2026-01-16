@@ -1,10 +1,13 @@
 """
 Core engine for code modernization analysis - STORAGE-AGNOSTIC
 Works with ANY storage backend (GridFS, S3, Local)
+Supports: snippets, folders, and ZIP files
 """
 
 import os
 import time
+import zipfile
+import io
 from typing import Dict, Any, List
 from datetime import datetime
 import logging
@@ -13,7 +16,7 @@ from app.config import settings
 from app.services.cache_service import cache_service
 from app.services.llm_service import llm_service
 from app.services.validation_service import validation_service
-from app.storage.storage_service import storage_service  # ✅ NEW: Abstract storage
+from app.storage.storage_service import storage_service
 from app.utils.token_counter import token_counter
 from app.models.schemas import CodeIssue, AnalysisSummary, AnalysisMetadata
 
@@ -27,7 +30,7 @@ class ModernizationEngine:
         self.prompt_template = self._load_prompt_template()
         self.llm_service = llm_service
         self.validation_service = validation_service
-        self.storage = storage_service  # ✅ NEW
+        self.storage = storage_service
     
     def _load_prompt_template(self) -> str:
         """Load prompt template from file"""
@@ -44,7 +47,7 @@ class ModernizationEngine:
     
     async def analyze(
         self,
-        file_id: str,  # ✅ CHANGED: Now accepts file_id instead of file_path
+        file_id: str,
         upload_type: str,
         force_refresh: bool = False
     ) -> Dict[str, Any]:
@@ -65,17 +68,50 @@ class ModernizationEngine:
         # STEP 1: READ FILE FROM STORAGE
         # ============================================================
         logger.info(f"📖 Reading file from storage: {file_id}")
+        
         try:
-            code_content = await self.storage.read_file_as_text(file_id)
-            logger.info(f"✅ File loaded: {len(code_content)} characters")
+            if upload_type == "zip":
+                # For ZIP files, read as binary and extract
+                file_content_bytes = await self.storage.read_file(file_id)
+                files_data = await self._extract_zip(file_content_bytes)
+                
+                if not files_data:
+                    raise ValueError("No code files found in ZIP archive")
+                
+                # Combine all code for caching
+                code_content = "\n\n".join(f['content'] for f in files_data)
+                logger.info(f"✅ Extracted {len(files_data)} files from ZIP")
+                
+            else:
+                # For snippet uploads, read as text
+                try:
+                    code_content = await self.storage.read_file_as_text(file_id)
+                    files_data = [{
+                        "path": file_id,
+                        "name": f"uploaded_{upload_type}",
+                        "content": code_content,
+                        "lines": len(code_content.split('\n'))
+                    }]
+                    logger.info(f"✅ File loaded: {len(code_content)} characters")
+                    
+                except ValueError as e:
+                    # Handle case where snippet is accidentally binary
+                    logger.error(f"❌ Storage read error: {e}")
+                    raise ValueError(
+                        f"Unable to read file as text: {str(e)}. "
+                        f"If this is a ZIP file, please use upload_type='zip'"
+                    )
+        
         except FileNotFoundError:
             raise FileNotFoundError(f"File not found in storage: {file_id}")
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Storage read error: {e}")
             raise
         
         # ============================================================
-        # STEP 2: GENERATE CACHE KEY FROM CONTENT (not file_id)
+        # STEP 2: GENERATE CACHE KEY FROM CONTENT
         # ============================================================
         cache_key = cache_service.generate_cache_key(code_content, upload_type)
         logger.info(f"🔑 Cache key: {cache_key[:60]}...")
@@ -91,18 +127,6 @@ class ModernizationEngine:
                 cached_result["metadata"]["processing_time"] = time.time() - start_time
                 cached_result["metadata"]["storage_backend"] = self.storage.backend_type
                 return cached_result
-        
-        # Parse file data (for V1, treating everything as single file)
-        # In V2, we'll handle ZIP extraction and folder structures
-        files_data = [{
-            "path": file_id,
-            "name": f"uploaded_{upload_type}",
-            "content": code_content,
-            "lines": len(code_content.split('\n'))
-        }]
-        
-        if not files_data:
-            raise ValueError("No valid code files found to analyze")
         
         # Get file stats
         stats = self._get_file_stats(files_data)
@@ -172,7 +196,7 @@ class ModernizationEngine:
                 "cost_estimate": cost_estimate,
                 "validation_applied": True,
                 "min_confidence": self.validation_service.min_confidence,
-                "storage_backend": self.storage.backend_type  # ✅ NEW
+                "storage_backend": self.storage.backend_type
             }
         }
         
@@ -185,6 +209,130 @@ class ModernizationEngine:
         )
         
         return result
+    
+    async def _extract_zip(self, zip_bytes: bytes) -> List[Dict[str, Any]]:
+        """
+        Extract code files from ZIP archive
+        
+        Args:
+            zip_bytes: ZIP file content as bytes
+            
+        Returns:
+            List of file data dictionaries
+        """
+        files_data = []
+        
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_ref:
+                for file_info in zip_ref.filelist:
+                    # Skip directories
+                    if file_info.is_dir():
+                        continue
+                    
+                    # Only process code files
+                    if not self._is_code_file(file_info.filename):
+                        logger.debug(f"⏭️  Skipping non-code file: {file_info.filename}")
+                        continue
+                    
+                    # Skip files that are too large (> 1MB)
+                    if file_info.file_size > 1_000_000:
+                        logger.warning(f"⚠️  Skipping large file: {file_info.filename} ({file_info.file_size} bytes)")
+                        continue
+                    
+                    content_bytes = zip_ref.read(file_info.filename)
+                    
+                    # Try to decode as text with multiple encodings
+                    content = None
+                    for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                        try:
+                            content = content_bytes.decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    
+                    if content is None:
+                        logger.warning(f"⚠️  Skipping binary file: {file_info.filename}")
+                        continue
+                    
+                    files_data.append({
+                        "path": file_info.filename,
+                        "name": os.path.basename(file_info.filename),
+                        "content": content,
+                        "lines": len(content.split('\n')),
+                        "size": file_info.file_size
+                    })
+                    
+                    logger.info(f"✅ Extracted: {file_info.filename} ({file_info.file_size} bytes)")
+        
+            logger.info(f"📦 Extracted {len(files_data)} code files from ZIP")
+            return files_data
+            
+        except zipfile.BadZipFile:
+            raise ValueError("Invalid ZIP file format")
+        except Exception as e:
+            logger.error(f"❌ ZIP extraction error: {e}")
+            raise ValueError(f"Failed to extract ZIP file: {str(e)}")
+    
+    def _is_code_file(self, filename: str) -> bool:
+        """
+        Check if file is a code file based on extension
+        
+        Args:
+            filename: File name to check
+            
+        Returns:
+            True if it's a code file
+        """
+        code_extensions = {
+            # Web/JavaScript
+            '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+            '.vue', '.svelte',
+            
+            # Python
+            '.py', '.pyw', '.pyx',
+            
+            # Java/JVM
+            '.java', '.kt', '.scala', '.groovy',
+            
+            # C/C++
+            '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+            
+            # C#/.NET
+            '.cs', '.vb', '.fs',
+            
+            # Go
+            '.go',
+            
+            # Rust
+            '.rs',
+            
+            # Ruby
+            '.rb', '.rake',
+            
+            # PHP
+            '.php', '.phtml',
+            
+            # Swift/Objective-C
+            '.swift', '.m', '.mm',
+            
+            # Shell/Scripting
+            '.sh', '.bash', '.zsh', '.fish',
+            
+            # SQL
+            '.sql',
+            
+            # Legacy/COBOL
+            '.cbl', '.cob', '.cobol',
+            
+            # Other
+            '.pl', '.pm', '.r', '.lua', '.dart',
+            
+            # Config (sometimes contains code)
+            '.json', '.yaml', '.yml', '.toml'
+        }
+        
+        filename_lower = filename.lower()
+        return any(filename_lower.endswith(ext) for ext in code_extensions)
     
     def _get_file_stats(self, files_data: List[Dict[str, str]]) -> Dict:
         """Get file statistics with proper language detection"""
@@ -208,46 +356,44 @@ class ModernizationEngine:
         
         for file_data in files_data:
             content = file_data.get('content', '').lower()
+            filename = file_data.get('path', '').lower()
             
-            # JavaScript/TypeScript detection
-            if any(keyword in content for keyword in ['function', 'const ', 'let ', 'var ', '=>', 'console.log']):
-                if 'interface ' in content or 'type ' in content or ': string' in content:
-                    detected.add('typescript')
-                else:
-                    detected.add('javascript')
-            
-            # Python detection
-            elif any(keyword in content for keyword in ['def ', 'import ', 'class ', 'print(', '__init__']):
+            # Extension-based detection first
+            if filename.endswith(('.ts', '.tsx')):
+                detected.add('typescript')
+            elif filename.endswith(('.js', '.jsx', '.mjs')):
+                detected.add('javascript')
+            elif filename.endswith('.py'):
                 detected.add('python')
-            
-            # Java detection
-            elif any(keyword in content for keyword in ['public class', 'private ', 'void ', 'System.out']):
+            elif filename.endswith('.java'):
                 detected.add('java')
-            
-            # C/C++ detection
-            elif any(keyword in content for keyword in ['#include', 'int main', 'printf(', 'std::']):
-                if 'std::' in content or 'cout' in content:
-                    detected.add('cpp')
-                else:
-                    detected.add('c')
-            
-            # Go detection
-            elif any(keyword in content for keyword in ['func ', 'package ', 'import (', 'fmt.Print']):
+            elif filename.endswith(('.c', '.h')):
+                detected.add('c')
+            elif filename.endswith(('.cpp', '.cc', '.cxx', '.hpp')):
+                detected.add('cpp')
+            elif filename.endswith('.go'):
                 detected.add('go')
-            
-            # Ruby detection
-            elif any(keyword in content for keyword in ['def ', 'end', 'puts ', 'require ']):
-                detected.add('ruby')
-            
-            # PHP detection
-            elif '<?php' in content or '$_' in content:
-                detected.add('php')
-            
-            # Rust detection
-            elif any(keyword in content for keyword in ['fn ', 'let mut', 'impl ', 'use std::']):
+            elif filename.endswith('.rs'):
                 detected.add('rust')
+            elif filename.endswith('.rb'):
+                detected.add('ruby')
+            elif filename.endswith('.php'):
+                detected.add('php')
+            elif filename.endswith(('.cbl', '.cob', '.cobol')):
+                detected.add('cobol')
+            
+            # Content-based fallback detection
+            elif not detected:
+                if any(keyword in content for keyword in ['function', 'const ', 'let ', 'var ', '=>']):
+                    if 'interface ' in content or ': string' in content:
+                        detected.add('typescript')
+                    else:
+                        detected.add('javascript')
+                elif any(keyword in content for keyword in ['def ', 'import ', 'class ', 'print(']):
+                    detected.add('python')
+                elif 'public class' in content or 'System.out' in content:
+                    detected.add('java')
         
-        # If no language detected, return "unknown"
         return list(detected) if detected else ['unknown']
     
     def _extract_original_code(self, files_data: List[Dict[str, str]]) -> str:
