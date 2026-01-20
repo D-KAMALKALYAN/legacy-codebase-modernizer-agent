@@ -19,34 +19,41 @@ class ReportService:
         """Inject storage service dependency"""
         self.storage = storage_service
     
-    async def generate_markdown(self, analysis_data: Dict[str, Any], job_id: str) -> str:
+    async def generate_markdown(self, analysis_data: Dict[str, Any], job_id: str, original_filename: str = None) -> str:
         """
         Generate Markdown report and upload to storage
         
         Args:
             analysis_data: Analysis results
             job_id: Job ID
+            original_filename: Original filename from upload
             
         Returns:
             File ID in storage system (GridFS ID, S3 key, etc.)
         """
         try:
-            # Generate filename
+            # Generate filename using original filename if provided
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"report_{job_id}_{timestamp}.md"
+            
+            if original_filename:
+                # Remove extension and use original name
+                base_name = original_filename.rsplit('.', 1)[0]
+                # Clean the base name (remove special characters)
+                base_name = base_name.replace(' ', '_').replace('/', '_')
+                filename = f"report_{base_name}_{timestamp}.md"
+            else:
+                filename = f"report_{job_id}_{timestamp}.md"
+            
+            logger.info(f"📝 Generating report: {filename}")
             
             # Build markdown content
-            md_content = self._build_markdown_content(analysis_data, job_id)
+            md_content = self._build_markdown_content(analysis_data, job_id, original_filename)
             
-            # ============================================================
-            # UPLOAD TO STORAGE (GridFS, S3, etc.) - NOT LOCAL FILESYSTEM
-            # ============================================================
+            # Upload to storage backend
             if not self.storage:
-                # Fallback: Save locally if storage not available
                 logger.warning("⚠️ Storage service not available. Saving locally.")
                 return self._save_local_fallback(filename, md_content)
             
-            # Upload to storage backend
             logger.info(f"📤 Uploading report to {self.storage.backend_type}: {filename}")
             file_id = await self.storage.write_file(
                 filename=filename,
@@ -55,8 +62,6 @@ class ReportService:
             )
             
             logger.info(f"✅ Report uploaded to storage: {file_id}")
-            
-            # Return file ID (GridFS ObjectId, S3 key, etc.)
             return file_id
             
         except Exception as e:
@@ -64,7 +69,7 @@ class ReportService:
             raise
     
     def _save_local_fallback(self, filename: str, content: str) -> str:
-        """Fallback: Save locally and return path (for backward compatibility)"""
+        """Fallback: Save locally and return path"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
         reports_dir = os.path.abspath(os.path.join(current_dir, "../../../reports"))
         os.makedirs(reports_dir, exist_ok=True)
@@ -77,14 +82,18 @@ class ReportService:
         logger.info(f"✅ Report saved locally: {filepath}")
         return filepath
     
-    def _build_markdown_content(self, data: Dict[str, Any], job_id: str) -> str:
+    def _build_markdown_content(self, data: Dict[str, Any], job_id: str, original_filename: str = None) -> str:
         """Build markdown report content"""
         summary = data.get("summary", {})
         issues = data.get("issues", [])
         analysis = data.get("analysis", {})
         metadata = data.get("metadata", {})
         
+        # Use original filename in report title if available
+        report_title = original_filename if original_filename else f"Job {job_id}"
+        
         md = f"""# Legacy Code Modernization Report
+## {report_title}
 
 **Job ID:** `{job_id}`  
 **Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  
@@ -184,21 +193,28 @@ class ReportService:
         
         return md
     
-    async def generate_pdf(self, analysis_data: Dict[str, Any], job_id: str) -> str:
+    async def generate_pdf(self, analysis_data: Dict[str, Any], job_id: str, original_filename: str = None) -> str:
         """
         Generate PDF report and upload to storage
         
         Args:
             analysis_data: Analysis results
             job_id: Job ID
+            original_filename: Original filename from upload
             
         Returns:
             File ID in storage system
         """
         try:
-            # Generate filename
+            # Generate filename using original filename if provided
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"report_{job_id}_{timestamp}.pdf"
+            
+            if original_filename:
+                base_name = original_filename.rsplit('.', 1)[0]
+                base_name = base_name.replace(' ', '_').replace('/', '_')
+                filename = f"report_{base_name}_{timestamp}.pdf"
+            else:
+                filename = f"report_{job_id}_{timestamp}.pdf"
             
             # Create PDF in memory
             import io
@@ -219,7 +235,9 @@ class ReportService:
                 textColor='#333333',
                 spaceAfter=30,
             )
-            story.append(Paragraph("Legacy Code Modernization Report", title_style))
+            
+            report_title = original_filename if original_filename else f"Job {job_id}"
+            story.append(Paragraph(f"Legacy Code Modernization Report: {report_title}", title_style))
             story.append(Spacer(1, 0.2 * inch))
             
             # Metadata

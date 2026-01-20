@@ -25,15 +25,48 @@ const UploadPage = () => {
   const navigate = useNavigate();
 
   const languages = [
-    { value: 'js', label: 'JavaScript' },
-    { value: 'ts', label: 'TypeScript' },
-    { value: 'py', label: 'Python' },
-    { value: 'java', label: 'Java' },
-    { value: 'go', label: 'Go' },
-    { value: 'rb', label: 'Ruby' },
-    { value: 'php', label: 'PHP' },
-    { value: 'cs', label: 'C#' },
-  ];
+  { value: 'js', label: 'JavaScript' },
+  { value: 'ts', label: 'TypeScript' },
+  { value: 'py', label: 'Python' },
+  { value: 'java', label: 'Java' },
+  { value: 'go', label: 'Go' },
+  { value: 'rb', label: 'Ruby' },
+  { value: 'php', label: 'PHP' },
+  { value: 'cs', label: 'C#' },
+
+  // Systems & performance
+  { value: 'c', label: 'C' },
+  { value: 'cpp', label: 'C++' },
+  { value: 'rs', label: 'Rust' },
+
+  // JVM & related
+  { value: 'kt', label: 'Kotlin' },
+  { value: 'scala', label: 'Scala' },
+
+  // Web & scripting
+  { value: 'dart', label: 'Dart' },
+  { value: 'lua', label: 'Lua' },
+  { value: 'bash', label: 'Bash' },
+
+  // Data & scientific
+  { value: 'r', label: 'R' },
+  { value: 'matlab', label: 'MATLAB' },
+
+  // Enterprise / legacy
+  { value: 'cobol', label: 'COBOL' },
+  { value: 'fortran', label: 'Fortran' },
+  { value: 'plsql', label: 'PL/SQL' },
+
+  // Mobile
+  { value: 'swift', label: 'Swift' },
+  { value: 'objc', label: 'Objective-C' },
+
+  // Functional
+  { value: 'hs', label: 'Haskell' },
+  { value: 'elixir', label: 'Elixir' },
+  { value: 'clj', label: 'Clojure' },
+];
+
 
   const handleSnippetSubmit = async (e) => {
     e.preventDefault();
@@ -134,59 +167,59 @@ const UploadPage = () => {
   }
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] py-8 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-4xl mx-auto space-y-6">
+    <div className="min-h-[calc(100vh-4rem)] py-4 sm:py-8 px-3 sm:px-6 lg:px-8 overflow-x-hidden">
+      <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6">
         {/* Header */}
-        <div className="text-center">
-          <h1 className="text-3xl font-bold text-light-text dark:text-dark-text mb-2">
+        <div className="text-center px-2">
+          <h1 className="text-2xl sm:text-3xl font-bold text-light-text dark:text-dark-text mb-2">
             Upload Code for Analysis
           </h1>
-          <p className="text-light-muted dark:text-dark-muted">
+          <p className="text-sm sm:text-base text-light-muted dark:text-dark-muted">
             Choose how you want to upload your legacy code
           </p>
         </div>
 
         {/* Error Alert */}
         {error && (
-          <div className="flex items-center space-x-2 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 animate-slide-down">
-            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" />
-            <p className="text-sm text-red-700 dark:text-red-300 flex-1">{error}</p>
-            <button onClick={() => setError('')} className="text-red-600 dark:text-red-400">
+          <div className="flex items-start space-x-2 p-3 sm:p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 animate-slide-down overflow-hidden">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs sm:text-sm text-red-700 dark:text-red-300 flex-1 break-words min-w-0">{error}</p>
+            <button onClick={() => setError('')} className="text-red-600 dark:text-red-400 flex-shrink-0">
               <X className="w-4 h-4" />
             </button>
           </div>
         )}
 
         {/* Tabs */}
-        <div className="card p-2 flex space-x-2">
+        <div className="card p-2 flex space-x-2 overflow-hidden">
           <button
             onClick={() => setActiveTab('snippet')}
-            className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 rounded-lg transition-all ${
+            className={`flex-1 flex items-center justify-center space-x-2 px-3 sm:px-4 py-2 sm:py-3 rounded-lg transition-all min-w-0 ${
               activeTab === 'snippet'
                 ? 'bg-primary-600 text-white shadow-md'
                 : 'text-light-text dark:text-dark-text hover:bg-light-surface dark:hover:bg-dark-elevated'
             }`}
           >
-            <Code2 className="w-5 h-5" />
-            <span className="font-medium">Code Snippet</span>
+            <Code2 className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="font-medium text-sm sm:text-base truncate">Code Snippet</span>
           </button>
           <button
             onClick={() => setActiveTab('zip')}
-            className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 rounded-lg transition-all ${
+            className={`flex-1 flex items-center justify-center space-x-2 px-3 sm:px-4 py-2 sm:py-3 rounded-lg transition-all min-w-0 ${
               activeTab === 'zip'
                 ? 'bg-primary-600 text-white shadow-md'
                 : 'text-light-text dark:text-dark-text hover:bg-light-surface dark:hover:bg-dark-elevated'
             }`}
           >
-            <FileArchive className="w-5 h-5" />
-            <span className="font-medium">ZIP File</span>
+            <FileArchive className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" />
+            <span className="font-medium text-sm sm:text-base truncate">ZIP File</span>
           </button>
         </div>
 
         {/* Content */}
-        <div className="card p-8">
+        <div className="card p-4 sm:p-8 overflow-hidden">
           {activeTab === 'snippet' ? (
-            <form onSubmit={handleSnippetSubmit} className="space-y-6">
+            <form onSubmit={handleSnippetSubmit} className="space-y-4 sm:space-y-6">
               {/* Language Selection */}
               <div>
                 <label className="block text-sm font-medium text-light-text dark:text-dark-text mb-2">
@@ -195,7 +228,7 @@ const UploadPage = () => {
                 <select
                   value={language}
                   onChange={(e) => setLanguage(e.target.value)}
-                  className="input"
+                  className="input w-full text-sm sm:text-base"
                 >
                   {languages.map((lang) => (
                     <option key={lang.value} value={lang.value}>
@@ -215,7 +248,7 @@ const UploadPage = () => {
                   value={fileName}
                   onChange={(e) => setFileName(e.target.value)}
                   placeholder={`snippet.${language}`}
-                  className="input"
+                  className="input w-full text-sm sm:text-base"
                 />
               </div>
 
@@ -228,26 +261,26 @@ const UploadPage = () => {
                   value={snippet}
                   onChange={(e) => setSnippet(e.target.value)}
                   required
-                  rows={15}
+                  rows={12}
                   placeholder="function getData() {&#10;  var query = 'SELECT * FROM users';&#10;  return db.query(query);&#10;}"
-                  className="input font-mono text-sm resize-none"
+                  className="input font-mono text-xs sm:text-sm resize-none w-full overflow-x-auto"
                 />
               </div>
 
-              <button type="submit" className="btn btn-primary w-full">
-                <Upload className="w-5 h-5 mr-2" />
+              <button type="submit" className="btn btn-primary w-full text-sm sm:text-base">
+                <Upload className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
                 Analyze Code
               </button>
             </form>
           ) : (
-            <form onSubmit={handleFileSubmit} className="space-y-6">
+            <form onSubmit={handleFileSubmit} className="space-y-4 sm:space-y-6">
               {/* File Drop Zone */}
               <div
                 onDragEnter={handleDrag}
                 onDragLeave={handleDrag}
                 onDragOver={handleDrag}
                 onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-xl p-12 text-center transition-all ${
+                className={`border-2 border-dashed rounded-xl p-6 sm:p-12 text-center transition-all ${
                   dragActive
                     ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/10'
                     : 'border-light-border dark:border-dark-border'
@@ -263,34 +296,34 @@ const UploadPage = () => {
 
                 {file ? (
                   <div className="space-y-4">
-                    <CheckCircle2 className="w-16 h-16 mx-auto text-green-500" />
-                    <div>
-                      <p className="text-lg font-semibold text-light-text dark:text-dark-text">
+                    <CheckCircle2 className="w-12 h-12 sm:w-16 sm:h-16 mx-auto text-green-500" />
+                    <div className="min-w-0">
+                      <p className="text-base sm:text-lg font-semibold text-light-text dark:text-dark-text break-words px-2">
                         {file.name}
                       </p>
-                      <p className="text-sm text-light-muted dark:text-dark-muted mt-1">
+                      <p className="text-xs sm:text-sm text-light-muted dark:text-dark-muted mt-1">
                         {(file.size / 1024 / 1024).toFixed(2)} MB
                       </p>
                     </div>
                     <button
                       type="button"
                       onClick={() => setFile(null)}
-                      className="btn btn-secondary"
+                      className="btn btn-secondary text-sm sm:text-base"
                     >
                       Change File
                     </button>
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <FileArchive className="w-16 h-16 mx-auto text-light-muted dark:text-dark-muted" />
+                    <FileArchive className="w-12 h-12 sm:w-16 sm:h-16 mx-auto text-light-muted dark:text-dark-muted" />
                     <div>
-                      <p className="text-lg font-semibold text-light-text dark:text-dark-text mb-2">
+                      <p className="text-base sm:text-lg font-semibold text-light-text dark:text-dark-text mb-2">
                         Drop your ZIP file here
                       </p>
-                      <p className="text-sm text-light-muted dark:text-dark-muted mb-4">
+                      <p className="text-xs sm:text-sm text-light-muted dark:text-dark-muted mb-4">
                         or click to browse
                       </p>
-                      <label htmlFor="file-upload" className="btn btn-secondary cursor-pointer">
+                      <label htmlFor="file-upload" className="btn btn-secondary cursor-pointer text-sm sm:text-base">
                         Choose File
                       </label>
                     </div>
@@ -304,9 +337,9 @@ const UploadPage = () => {
               <button
                 type="submit"
                 disabled={!file}
-                className="btn btn-primary w-full"
+                className="btn btn-primary w-full text-sm sm:text-base"
               >
-                <Upload className="w-5 h-5 mr-2" />
+                <Upload className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
                 Upload and Analyze
               </button>
             </form>
@@ -314,31 +347,31 @@ const UploadPage = () => {
         </div>
 
         {/* Info Cards */}
-        <div className="grid md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
           <div className="card p-4 space-y-2">
-            <FileText className="w-8 h-8 text-primary-600 dark:text-primary-400" />
-            <h3 className="font-semibold text-light-text dark:text-dark-text">
+            <FileText className="w-6 h-6 sm:w-8 sm:h-8 text-primary-600 dark:text-primary-400" />
+            <h3 className="font-semibold text-sm sm:text-base text-light-text dark:text-dark-text">
               Code Snippets
             </h3>
-            <p className="text-sm text-light-muted dark:text-dark-muted">
+            <p className="text-xs sm:text-sm text-light-muted dark:text-dark-muted">
               Quick analysis for small code samples
             </p>
           </div>
           <div className="card p-4 space-y-2">
-            <FileArchive className="w-8 h-8 text-primary-600 dark:text-primary-400" />
-            <h3 className="font-semibold text-light-text dark:text-dark-text">
+            <FileArchive className="w-6 h-6 sm:w-8 sm:h-8 text-primary-600 dark:text-primary-400" />
+            <h3 className="font-semibold text-sm sm:text-base text-light-text dark:text-dark-text">
               ZIP Archives
             </h3>
-            <p className="text-sm text-light-muted dark:text-dark-muted">
+            <p className="text-xs sm:text-sm text-light-muted dark:text-dark-muted">
               Full project analysis with folder structure
             </p>
           </div>
           <div className="card p-4 space-y-2">
-            <CheckCircle2 className="w-8 h-8 text-primary-600 dark:text-primary-400" />
-            <h3 className="font-semibold text-light-text dark:text-dark-text">
+            <CheckCircle2 className="w-6 h-6 sm:w-8 sm:h-8 text-primary-600 dark:text-primary-400" />
+            <h3 className="font-semibold text-sm sm:text-base text-light-text dark:text-dark-text">
               Instant Results
             </h3>
-            <p className="text-sm text-light-muted dark:text-dark-muted">
+            <p className="text-xs sm:text-sm text-light-muted dark:text-dark-muted">
               Cached analyses return in seconds
             </p>
           </div>

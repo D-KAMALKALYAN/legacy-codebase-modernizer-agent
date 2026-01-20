@@ -15,7 +15,7 @@ mongoose.connection.on('open', () => {
 /**
  * Trigger AI analysis for a job
  */
-async function triggerAIAnalysis(jobId, fileId, uploadType) {
+async function triggerAIAnalysis(jobId, fileId, uploadType, originalFileName = null) {
   const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
   
   console.log(`\n${'='.repeat(60)}`);
@@ -24,6 +24,7 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
   console.log(`Job ID: ${jobId}`);
   console.log(`File ID: ${fileId}`);
   console.log(`Upload Type: ${uploadType}`);
+  console.log(`Original Filename: ${originalFileName || 'N/A'}`);
   console.log(`AI Service URL: ${aiServiceUrl}`);
   console.log(`${'='.repeat(60)}\n`);
   
@@ -32,14 +33,15 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
     await Job.findByIdAndUpdate(jobId, { status: 'processing' });
     console.log(`✅ Job status updated to 'processing'`);
     
-    // Call AI service with file_id (not file_path)
+    // Call AI service with file_id and original_filename
     console.log(`📡 Calling AI service...`);
     const response = await axios.post(
       `${aiServiceUrl}/api/analyze`,
       {
         job_id: jobId.toString(),
-        file_id: fileId.toString(), // ✅ Sending GridFS ID
+        file_id: fileId.toString(),
         upload_type: uploadType,
+        original_filename: originalFileName,
         force_refresh: false
       },
       {
@@ -57,9 +59,11 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
     
     const analysisResult = response.data;
     
-    // ✅ CRITICAL: report_path now contains GridFS file ID, not filesystem path
-    const reportId = analysisResult.report_path; // This is now a GridFS ObjectId string
+    // report_path now contains GridFS file ID
+    const reportId = analysisResult.report_path;
     
+    console.log("Analysis Result:", JSON.stringify(analysisResult, null, 2));
+
     console.log(`Report ID (GridFS): ${reportId || 'NOT PROVIDED'}`);
     console.log(`Issues Count: ${analysisResult.issues?.length || 0}`);
     
@@ -71,6 +75,7 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
       totalIssues: analysisResult.summary?.total_issues || 0,
       critical: analysisResult.summary?.critical || 0,
       warnings: analysisResult.summary?.warnings || 0,
+      info: analysisResult.summary?.info || 0,
       tokens_used: analysisResult.metadata?.tokens_used || 0,
       cost_estimate: analysisResult.metadata?.cost_estimate || 0,
       cached: analysisResult.metadata?.cached || false
@@ -83,7 +88,7 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
       jobId,
       {
         status: 'completed',
-        reportId: reportId ? new mongoose.Types.ObjectId(reportId) : null, // ✅ Store as ObjectId
+        reportId: reportId ? new mongoose.Types.ObjectId(reportId) : null,
         completedAt: new Date(),
         metadata: metadata
       },
@@ -99,7 +104,7 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
     console.log(`${'='.repeat(60)}`);
     console.log(`Job ID: ${updatedJob._id}`);
     console.log(`Status: ${updatedJob.status}`);
-    console.log(`Report ID: ${updatedJob.reportId || 'NULL'}`); // ✅ Changed from reportPath
+    console.log(`Report ID: ${updatedJob.reportId || 'NULL'}`);
     console.log(`${'='.repeat(60)}\n`);
     
   } catch (error) {
@@ -109,11 +114,10 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
     console.error(`Job ID: ${jobId}`);
     console.error(`Error: ${error.message}`);
     
-    // ✅ FIXED: Properly serialize error message
+    // Properly serialize error message
     let errorMessage = error.message || 'AI analysis failed';
     
     if (error.response?.data?.detail) {
-      // If detail is an array (Pydantic validation errors), stringify it
       if (Array.isArray(error.response.data.detail)) {
         errorMessage = JSON.stringify(error.response.data.detail);
       } else {
@@ -127,7 +131,7 @@ async function triggerAIAnalysis(jobId, fileId, uploadType) {
     try {
       await Job.findByIdAndUpdate(jobId, {
         status: 'failed',
-        errorMessage: errorMessage, // ✅ Now properly serialized
+        errorMessage: errorMessage,
         completedAt: new Date()
       });
       console.log(`✅ Job status updated to 'failed'`);
@@ -155,6 +159,8 @@ const uploadSnippet = async (req, res) => {
 
     // Save snippet to GridFS
     const snippetFileName = fileName || `snippet-${Date.now()}.${language}`;
+    const originalFileName = fileName || `snippet.${language}`;
+    
     const uploadStream = gridfsBucket.openUploadStream(snippetFileName, {
       contentType: 'text/plain'
     });
@@ -163,11 +169,12 @@ const uploadSnippet = async (req, res) => {
 
     const fileId = uploadStream.id;
 
-    // Create job
+    // Create job with original filename
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'snippet',
       fileName: snippetFileName,
+      originalFileName: originalFileName,
       fileId: fileId.toString(),
       fileSize: Buffer.byteLength(code, 'utf-8'),
       metadata: {
@@ -183,8 +190,8 @@ const uploadSnippet = async (req, res) => {
       data: { job }
     });
 
-    // Trigger AI analysis asynchronously
-    triggerAIAnalysis(job._id, job.fileId, job.uploadType).catch(err => {
+    // Trigger AI analysis asynchronously with original filename
+    triggerAIAnalysis(job._id, job.fileId, job.uploadType, job.originalFileName).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 
@@ -232,6 +239,8 @@ const uploadZip = async (req, res) => {
 
     // Save ZIP to GridFS
     const zipFileName = `upload-${Date.now()}-${file.name}`;
+    const originalFileName = file.name;
+    
     const uploadStream = gridfsBucket.openUploadStream(zipFileName, {
       contentType: 'application/zip'
     });
@@ -240,11 +249,12 @@ const uploadZip = async (req, res) => {
 
     const fileId = uploadStream.id;
 
-    // Create job
+    // Create job with original filename
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'zip',
       fileName: zipFileName,
+      originalFileName: originalFileName,
       fileId: fileId.toString(),
       fileSize: file.size,
       folderStructure: {},
@@ -257,8 +267,8 @@ const uploadZip = async (req, res) => {
       data: { job }
     });
 
-    // Trigger AI analysis asynchronously
-    triggerAIAnalysis(job._id, job.fileId, job.uploadType).catch(err => {
+    // Trigger AI analysis asynchronously with original filename
+    triggerAIAnalysis(job._id, job.fileId, job.uploadType, job.originalFileName).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 
@@ -311,11 +321,15 @@ const uploadFolder = async (req, res) => {
       });
     }
 
-    // Create job
+    const folderName = `folder-${Date.now()}`;
+    const originalFileName = files.length > 0 ? `${files[0].name.split('/')[0]} (${files.length} files)` : folderName;
+
+    // Create job with original folder name
     const job = await Job.create({
       userId: req.user.id,
       uploadType: 'folder',
-      fileName: `folder-${Date.now()}`,
+      fileName: folderName,
+      originalFileName: originalFileName,
       fileIds,
       fileSize: totalSize,
       folderStructure: {},
@@ -328,8 +342,8 @@ const uploadFolder = async (req, res) => {
       data: { job }
     });
 
-    // Trigger AI analysis asynchronously
-    triggerAIAnalysis(job._id, job.fileIds[0], job.uploadType).catch(err => {
+    // Trigger AI analysis asynchronously with original filename
+    triggerAIAnalysis(job._id, job.fileIds[0], job.uploadType, job.originalFileName).catch(err => {
       console.error('AI analysis trigger failed:', err);
     });
 

@@ -1,69 +1,81 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
 
-const jobSchema = mongoose.Schema({
+const jobSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   uploadType: {
     type: String,
-    enum: ['snippet', 'folder', 'zip'],
+    enum: ['snippet', 'zip', 'folder'],
     required: true
   },
   fileName: {
     type: String,
     required: true
   },
-  fileId: {
-    type: mongoose.Schema.Types.ObjectId, // For single file (e.g., snippet or ZIP)
+  originalFileName: {
+    type: String,
     default: null
   },
-  fileIds: {
-    type: [mongoose.Schema.Types.ObjectId], // For multiple files (e.g., folder upload)
-    default: []
+  fileId: {
+    type: String,
+    default: null
   },
+  fileIds: [{
+    type: String
+  }],
   fileSize: {
     type: Number,
-    required: true
+    default: 0
   },
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'failed'],
-    default: 'pending'
-  },
-  folderStructure: {
-    type: Object,
-    default: null
+    default: 'pending',
+    index: true
   },
   reportId: {
-    type: mongoose.Schema.Types.ObjectId, // ✅ GridFS ID for generated report
+    type: mongoose.Schema.Types.ObjectId,
     default: null
   },
   errorMessage: {
     type: String,
     default: null
   },
+  folderStructure: {
+    type: Object,
+    default: {}
+  },
   metadata: {
     fileCount: { type: Number, default: 0 },
     totalLines: { type: Number, default: 0 },
-    languages: [String],
+    languages: [{ type: String }],
     totalIssues: { type: Number, default: 0 },
     critical: { type: Number, default: 0 },
     warnings: { type: Number, default: 0 },
+    info: { type: Number, default: 0 },
     tokens_used: { type: Number, default: 0 },
     cost_estimate: { type: Number, default: 0 },
     cached: { type: Boolean, default: false }
   },
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   },
   completedAt: {
     type: Date,
     default: null
   }
+}, {
+  timestamps: true
 });
 
-const Job = mongoose.model("Job", jobSchema);
-module.exports = Job;
+// Indexes for performance
+jobSchema.index({ userId: 1, createdAt: -1 });
+jobSchema.index({ status: 1, createdAt: -1 });
+
+module.exports = mongoose.model('Job', jobSchema);
